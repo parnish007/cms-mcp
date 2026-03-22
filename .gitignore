@@ -1,16 +1,52 @@
+# Build output
+build/
+dist/
+
 # Dependencies
 node_modules/
 jspm_packages/
+
+# Environment & secrets — NEVER commit real credentials
+.env
+.env.*
+.env.local
+*.pem
+*.key
+
+# Config with real credentials (example configs are tracked)
+cms-mcp.config.json
+cms-mcp.policies.json
+
+# SQLite caches
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Audit logs
+*.log
+audit/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 
 # Debug logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Operating System Files
-.DS_Store
-Thumbs.db
+# Test artifacts
+coverage/
+.nyc_output/
 
-# Build output
-dist/
-build/
+# npm pack output
+*.tgz

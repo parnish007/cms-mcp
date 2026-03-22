@@ -1,0 +1,27 @@
+# Source (published package only needs build/)
+src/
+tests/
+docs/
+examples/
+.github/
+
+# Config
+tsconfig.json
+.gitignore
+.npmignore
+.env*
+cms-mcp.config.json
+cms-mcp.policies.json
+
+# Dev files
+CONTRIBUTING.md
+SECURITY.md
+docker-compose.yml
+
+# Caches & logs
+*.db
+*.log
+
+# Editor
+.vscode/
+.idea/

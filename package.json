@@ -1,7 +1,7 @@
 {
   "name": "cms-mcp",
-  "version": "0.1.0",
-  "description": "Universal agentic MCP server — manage any CMS or portfolio site through Claude with natural language",
+  "version": "0.2.0",
+  "description": "Universal MCP server for managing CMS content — blogs, projects, media — through Claude with semantic search, OpenAPI discovery, and policy enforcement",
   "type": "module",
   "bin": {
     "cms-mcp": "./build/index.js"
@@ -9,13 +9,15 @@
   "files": [
     "build",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "SECURITY.md"
   ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "start": "node build/index.js",
     "lint": "tsc --noEmit",
+    "test": "node --test tests/*.test.js",
     "clean": "rm -rf build"
   },
   "keywords": [
@@ -26,10 +28,17 @@
     "anthropic",
     "model-context-protocol",
     "ai",
-    "content-management"
+    "content-management",
+    "openapi",
+    "semantic-search",
+    "vector-cache"
   ],
   "author": "",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/parnish007/cms-mcp"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
     "better-sqlite3": "^12.8.0",

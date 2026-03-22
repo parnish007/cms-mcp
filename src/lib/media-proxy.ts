@@ -26,9 +26,9 @@ const PRIVATE_IP_RE = [
   /^172\.(1[6-9]|2\d|3[01])\./,
   /^192\.168\./,
   /^169\.254\./, // link-local / AWS metadata
-  /^::1$/,       // IPv6 loopback
-  /^fc00:/i,     // IPv6 ULA
-  /^fe80:/i,     // IPv6 link-local
+  /^\[?::1\]?$/,       // IPv6 loopback (with or without brackets)
+  /^\[?fc00:/i,        // IPv6 ULA
+  /^\[?fe80:/i,        // IPv6 link-local
 ];
 
 export function assertSafeUrl(raw: string): URL {

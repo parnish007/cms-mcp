@@ -1,0 +1,28 @@
+# docker-compose.yml
+# One-command setup: `docker compose up`
+# Runs cms-mcp in stdio mode with optional webhook listener.
+
+version: "3.9"
+
+services:
+  cms-mcp:
+    build: .
+    container_name: cms-mcp
+    restart: unless-stopped
+    volumes:
+      # Mount your config file
+      - ./cms-mcp.config.json:/app/cms-mcp.config.json:ro
+      # Persist SQLite caches and audit logs
+      - cms-mcp-data:/app/data
+    environment:
+      # Set your secrets here or use an .env file
+      - CMS_API_TOKEN=${CMS_API_TOKEN:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
+    # Uncomment for webhook mode:
+    # ports:
+    #   - "3001:3001"
+    # command: ["node", "build/index.js", "--webhook"]
+
+volumes:
+  cms-mcp-data:
