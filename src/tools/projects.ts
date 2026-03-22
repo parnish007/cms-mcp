@@ -285,7 +285,7 @@ export function registerProjectTools(
 function normalizeList(data: unknown): unknown[] {
   if (Array.isArray(data)) return data;
   if (data && typeof data === "object") {
-    for (const key of ["items", "data", "results", "projects"]) {
+    for (const key of ["items", "data", "results", "projects", "records", "entries", "nodes", "collection", "content", "list"]) {
       const v = (data as any)[key];
       if (Array.isArray(v)) return v;
     }

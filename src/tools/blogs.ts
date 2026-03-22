@@ -273,7 +273,7 @@ export function registerBlogTools(
 function normalizeList(data: unknown): unknown[] {
   if (Array.isArray(data)) return data;
   if (data && typeof data === "object") {
-    for (const key of ["items", "data", "results", "blogs", "posts"]) {
+    for (const key of ["items", "data", "results", "blogs", "posts", "articles", "records", "entries", "nodes", "collection", "content", "list"]) {
       const v = (data as any)[key];
       if (Array.isArray(v)) return v;
     }

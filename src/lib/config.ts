@@ -44,20 +44,6 @@ const GitHubSchema = z.object({
   webhookSecret: z.string().optional().describe("HMAC secret for GitHub webhook verification (env:VAR_NAME supported)"),
 });
 
-const FieldMapSchema = z.object({
-  title:          z.string().default("title"),
-  body:           z.string().default("body"),
-  slug:           z.string().default("slug"),
-  status:         z.string().default("status"),
-  tags:           z.string().default("tags"),
-  coverImage:     z.string().default("cover_image"),
-  publishedAt:    z.string().default("published_at"),
-  seoTitle:       z.string().default("seo_title"),
-  seoDescription: z.string().default("seo_description"),
-  techStack:      z.string().default("tech_stack"),
-  liveUrl:        z.string().default("live_url"),
-  repoUrl:        z.string().default("repo_url"),
-});
 
 const WebhookSchema = z.object({
   port:   z.number().int().min(1024).max(65535).default(3001),
@@ -81,7 +67,6 @@ export const ConfigSchema = z.object({
   auth:        AuthSchema,
   endpoints:   EndpointsSchema.default({}),
   github:      GitHubSchema.optional(),
-  fieldMap:    FieldMapSchema.optional().default({}),
   readOnly:    z.boolean().default(false).describe("If true, all write tools are disabled"),
   auditLog:    z.string().optional().describe("Path to write audit log NDJSON file"),
   policies:    z.string().optional().describe("Path to cms-mcp.policies.json"),
@@ -91,7 +76,6 @@ export const ConfigSchema = z.object({
 });
 
 export type Config      = z.infer<typeof ConfigSchema>;
-export type FieldMap    = z.infer<typeof FieldMapSchema>;
 export type WebhookConf = z.infer<typeof WebhookSchema>;
 
 // ─── Secret Resolution ────────────────────────────────────────────────────────
@@ -175,7 +159,7 @@ export function loadConfig(explicitPath?: string): Config {
   if (!configPath) {
     throw new Error(
       `[cms-mcp] No config file found. Create cms-mcp.config.json in your project root.\n` +
-      `See: https://github.com/YOUR_USERNAME/cms-mcp#configuration`
+      `See: https://github.com/parnish007/cms-mcp#configuration`
     );
   }
 
