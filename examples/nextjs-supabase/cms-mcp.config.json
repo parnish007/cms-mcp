@@ -1,0 +1,19 @@
+{
+  "$schema": "../../cms-mcp.schema.json",
+  "baseUrl": "https://your-site.vercel.app/api",
+  "auth": {
+    "type": "bearer",
+    "token": "env:CMS_API_TOKEN"
+  },
+  "endpoints": {
+    "projects": "/projects",
+    "blogs": "/blogs",
+    "media": "/media"
+  },
+  "github": {
+    "token": "env:GITHUB_TOKEN",
+    "defaultOwner": "your-github-username"
+  },
+  "readOnly": false,
+  "auditLog": "~/.cms-mcp/audit.log"
+}
