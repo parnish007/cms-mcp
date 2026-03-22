@@ -1,18 +1,34 @@
 # cms-mcp
 
-**A [Model Context Protocol](https://modelcontextprotocol.io) server that gives Claude control over any REST-based CMS.**
+<div align="center">
 
-Write blog posts, manage projects, upload media, search content semantically, enforce publishing policies — all through natural language conversation with Claude.
+[![npm version](https://img.shields.io/npm/v/cms-mcp?color=blue&style=flat-square)](https://www.npmjs.com/package/cms-mcp)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
+[![MCP Compatible](https://img.shields.io/badge/MCP-compatible-6366f1?style=flat-square)](https://modelcontextprotocol.io)
+[![Tests](https://img.shields.io/badge/tests-78%20passing-22c55e?style=flat-square)](#testing)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6?style=flat-square)](https://www.typescriptlang.org/)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D18-339933?style=flat-square)](https://nodejs.org/)
+
+**A [Model Context Protocol](https://modelcontextprotocol.io) server that gives Claude full control over any REST-based CMS.**
+
+Write blog posts, manage projects, upload media, search content semantically, enforce publishing policies, and require human approval before anything goes live — all through natural language with Claude.
+
+</div>
+
+---
 
 ```
-You: "Scan my latest GitHub repo and publish it as a project entry"
-Claude: Done — scanned, diffed, policy-checked, and published in 30 seconds.
+You: "Scan my latest GitHub repo and publish it as a portfolio project"
+Claude: Done — scanned, policy-checked, diff shown, awaiting your approval...
+[You click Approve in browser]
+Claude: Published. ✅
 
-You: "Find everything we wrote about machine learning"
-Claude: Found 4 matches — FinTrack Dashboard (87%), Data Viz Deep Dive (62%)...
+You: "Have I written about LSTMs before? If so, link to that post in this new article."
+Claude: Yes — found "Deep Learning Fundamentals" (87% match). Linking now.
 
-You: "Draft a blog post summarizing our Q4 release"
-Claude: Here's the draft. Confirm to save, or tell me what to change.
+You: "Inspect the schema of my blogs endpoint"
+Claude: Found 14 fields — title (string), body (string), status (enum: draft|published),
+        slug (slug), cover_image (url?), tags (array), published_at (date?)...
 ```
 
 Works with **any REST API** — Supabase, PocketBase, Payload CMS, Directus, Strapi, custom Next.js/Express/FastAPI routes, or any backend that speaks JSON over HTTP.
@@ -21,7 +37,6 @@ Works with **any REST API** — Supabase, PocketBase, Payload CMS, Directus, Str
 
 ## Table of Contents
 
-- [Why cms-mcp](#why-cms-mcp)
 - [Features](#features)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
@@ -37,67 +52,48 @@ Works with **any REST API** — Supabase, PocketBase, Payload CMS, Directus, Str
 
 ---
 
-## Why cms-mcp
-
-Most CMS integrations assume a human clicking through a dashboard. cms-mcp assumes an AI agent making API calls on your behalf — with all the safety rails that implies.
-
-**Without cms-mcp:**
-```
-You ask Claude to update a blog post → Claude hallucinates an API shape →
-Wrong fields sent → Partial write with missing data → Broken content
-```
-
-**With cms-mcp:**
-```
-You ask Claude to update a blog post →
-Zod validates inputs → Diff shown for review → Atomic write with rollback →
-Audit log entry → Success
-```
-
----
-
 ## Features
 
 | Feature | What it does |
 |---------|-------------|
-| **29 MCP tools** | Projects, blogs, media, GitHub, semantic search, API introspection |
+| **32 MCP tools** | Projects, blogs, media, GitHub, semantic search, API introspection, schema inspection |
 | **MCP Resources** | `cms://projects/{id}`, `cms://blogs/{id}` — Claude reads content directly |
 | **Zod validation firewall** | Every tool input validated before any network call |
 | **Atomic transactions + rollback** | Failed writes auto-revert — no half-created records |
-| **Diff preview before writes** | Claude shows a field-level change table before confirming |
-| **Policy engine** | 10 rule types enforce publishing standards (required fields, SEO, no placeholder text, etc.) |
-| **Semantic vector search** | TF-IDF local search — find content by meaning, not just keywords |
-| **OpenAPI auto-discovery** | Scans your API for a Swagger/OpenAPI spec and suggests endpoint config |
+| **Diff preview before writes** | Field-level change table before anything hits your API |
+| **Policy engine** | 10 rule types enforce publishing standards across teams |
+| **🆕 Human approval gate** | Local dashboard — Claude pauses, you click Approve/Reject |
+| **🆕 OpenAI semantic search** | Real embeddings (text-embedding-3-small) or local TF-IDF |
+| **🆕 Auto-schema inspector** | Fetches live records and infers your CMS field types |
+| **OpenAPI auto-discovery** | Scans your API for a Swagger/OpenAPI spec on startup |
 | **Circuit breaker** | Serves cached responses when your CMS API goes down |
-| **Content distillation** | HTML→Markdown, junk field stripping, metadata headers for clean LLM context |
-| **GitHub webhook mode** | Auto-creates draft project entries when you push to a repo |
+| **Content distillation** | HTML→Markdown, junk field stripping, metadata headers |
+| **GitHub webhook mode** | Auto-creates draft entries when you push to a repo |
 | **Schema cache** | SQLite-backed OpenAPI spec cache with TTL invalidation |
-| **Audit logging** | Every tool call logged — tool name, args, outcome, duration, credentials redacted |
-| **Read-only mode** | Disable all writes for exploratory or multi-agent sessions |
-| **SSRF protection** | Blocks all private IPs, loopback, AWS metadata, non-HTTP schemes |
-| **76 tests** | Unit tests across 6 suites — policy, security, vector cache, circuit breaker, distiller, OpenAPI |
+| **Audit logging** | Every tool call logged — tool, args, outcome, duration |
+| **Read-only mode** | Disable all writes for exploratory sessions |
+| **SSRF + security hardening** | Private IPs blocked, no redirect following, 30s timeouts |
+| **78 tests** | 6 suites — policy, security, vector cache, circuit breaker, distiller, OpenAPI |
 
 ---
 
 ## Installation
 
-**npx (no install needed):**
+**npx (no install):**
 ```bash
 npx cms-mcp --config ./cms-mcp.config.json
 ```
 
-**npm global install:**
+**npm global:**
 ```bash
 npm install -g cms-mcp
-cms-mcp --config ./cms-mcp.config.json
 ```
 
 **From source:**
 ```bash
 git clone https://github.com/parnish007/cms-mcp
 cd cms-mcp
-npm install
-npm run build
+npm install && npm run build
 node build/index.js --config ./cms-mcp.config.json
 ```
 
@@ -110,9 +106,7 @@ docker compose up
 
 ## Quick Start
 
-### 1. Create a config file
-
-`cms-mcp.config.json`:
+**1. Create `cms-mcp.config.json`:**
 
 ```json
 {
@@ -123,55 +117,42 @@ docker compose up
   },
   "endpoints": {
     "projects": "/projects",
-    "blogs": "/posts",
-    "media": "/uploads"
+    "blogs":    "/posts",
+    "media":    "/uploads"
   }
 }
 ```
 
-> **Tip:** Set `"type": "none"` if your API has no auth. All endpoints are optional — omit any you don't use.
-
-### 2. Set environment variables
-
+**2. Set environment variables:**
 ```bash
 export CMS_API_TOKEN=your-token-here
 ```
 
-Or pass them directly in the Claude Desktop config (see step 3).
-
-### 3. Add to Claude Desktop
-
-File: `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
-File: `%APPDATA%\Claude\claude_desktop_config.json` (Windows)
-
+**3. Add to Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 ```json
 {
   "mcpServers": {
     "cms-mcp": {
       "command": "npx",
-      "args": ["cms-mcp", "--config", "/absolute/path/to/cms-mcp.config.json"],
-      "env": {
-        "CMS_API_TOKEN": "your-token-here"
-      }
+      "args": ["cms-mcp", "--config", "/path/to/cms-mcp.config.json"],
+      "env": { "CMS_API_TOKEN": "your-token-here" }
     }
   }
 }
 ```
 
-### 4. Or add to Claude Code (CLI)
-
+**Or add to Claude Code:**
 ```bash
 claude mcp add cms-mcp -- npx cms-mcp --config ./cms-mcp.config.json
 ```
 
-### 5. Start talking
-
+**4. Talk to Claude:**
 ```
 "List my draft blog posts"
-"Create a new project called 'Analytics Dashboard' with status draft"
-"Scan github.com/you/my-repo and create a portfolio entry"
-"Search my content for anything about TypeScript"
-"Check if project 42 passes publishing policies"
+"Inspect the schema of my projects endpoint"
+"Create a project called Dashboard — show diff first"
+"Search my content for anything about machine learning"
+"Check if post 42 passes publishing policies"
 ```
 
 ---
@@ -182,7 +163,7 @@ claude mcp add cms-mcp -- npx cms-mcp --config ./cms-mcp.config.json
 
 ```json
 {
-  "name": "My Portfolio Site",
+  "name": "My Site",
   "baseUrl": "https://your-api.com/api",
 
   "auth": {
@@ -198,18 +179,28 @@ claude mcp add cms-mcp -- npx cms-mcp --config ./cms-mcp.config.json
 
   "github": {
     "token":        "env:GITHUB_TOKEN",
-    "defaultOwner": "your-github-username"
+    "defaultOwner": "your-username"
   },
 
   "readOnly": false,
-
   "auditLog": "~/.cms-mcp/audit.log",
-
   "policies": "./cms-mcp.policies.json",
 
   "schemaCache": {
     "path":       "~/.cms-mcp/schema-cache.db",
     "ttlMinutes": 60
+  },
+
+  "embedding": {
+    "provider": "openai",
+    "apiKey":   "env:OPENAI_API_KEY",
+    "model":    "text-embedding-3-small"
+  },
+
+  "approvals": {
+    "port":      2323,
+    "timeoutMs": 300000,
+    "tools":     ["publish_project", "publish_blog", "delete_project", "delete_blog"]
   },
 
   "openapi": {
@@ -227,154 +218,151 @@ claude mcp add cms-mcp -- npx cms-mcp --config ./cms-mcp.config.json
 
 ### Auth types
 
-| Type | Config example |
-|------|----------------|
+| Type | Config |
+|------|--------|
 | Bearer token | `{ "type": "bearer", "token": "env:MY_TOKEN" }` |
 | API key header | `{ "type": "api-key", "header": "X-API-Key", "token": "env:MY_KEY" }` |
 | HTTP Basic | `{ "type": "basic", "username": "admin", "password": "env:MY_PASS" }` |
 | No auth | `{ "type": "none" }` |
 
-### Secret references
-
-Any string prefixed with `env:` is resolved from the environment at startup:
-
-```json
-{ "token": "env:CMS_API_TOKEN" }
-```
-
-Secrets are **never** written to logs — only their redacted length is recorded.
+Any string prefixed with `env:` is resolved from the environment at startup. Secrets are **never** written to logs.
 
 ### CLI flags
 
 | Flag | Description |
 |------|-------------|
-| `--config <path>`, `-c <path>` | Config file path (default: auto-discovers `cms-mcp.config.json` in CWD or home dir) |
+| `--config <path>`, `-c` | Config file path |
 | `--readonly` | Disable all write tools |
+| `--approval` | Enable approval gate even without `approvals` config block |
 | `--webhook` | Start GitHub webhook listener |
-| `--no-discover` | Skip OpenAPI auto-discovery on startup |
+| `--no-discover` | Skip OpenAPI auto-discovery |
 
 ---
 
 ## Tools Reference
 
 ### Projects (8 tools)
+`list_projects` · `get_project` · `preview_create_project` · `create_project` · `preview_update_project` · `update_project` · `publish_project` · `delete_project`
 
-| Tool | Description |
-|------|-------------|
-| `list_projects` | List all projects with optional status filter and search |
-| `get_project` | Get a single project by ID or slug |
-| `preview_create_project` | Preview what will be created (no API call) |
-| `create_project` | Create a project (requires `confirm: true`) |
-| `preview_update_project` | Preview changes vs current record |
-| `update_project` | Update a project (requires `confirm: true`) |
-| `publish_project` | Set status to `published` |
-| `delete_project` | Delete a project (requires `confirm: true`, irreversible) |
-
-**Project fields:** `title`, `summary`, `description`, `slug`, `tech_stack`, `live_url`, `repo_url`, `cover_image`, `tags`, `status`, `is_featured`, `seo_title`, `seo_description`
-
-All fields except `title` are optional.
-
----
+**Fields:** `title`, `summary`, `description`, `slug`, `tech_stack`, `live_url`, `repo_url`, `cover_image`, `tags`, `status`, `is_featured`, `seo_title`, `seo_description`
 
 ### Blogs (9 tools)
+`list_blogs` · `get_blog` · `preview_create_blog` · `create_blog` · `preview_update_blog` · `update_blog` · `publish_blog` · `unpublish_blog` · `delete_blog`
 
-| Tool | Description |
-|------|-------------|
-| `list_blogs` | List all blog posts with optional status filter |
-| `get_blog` | Get a single post by ID or slug |
-| `preview_create_blog` | Preview what will be created |
-| `create_blog` | Create a blog post (requires `confirm: true`) |
-| `preview_update_blog` | Preview changes vs current record |
-| `update_blog` | Update a blog post (requires `confirm: true`) |
-| `publish_blog` | Set status to `published` and stamp `published_at` |
-| `unpublish_blog` | Move back to `draft` status |
-| `delete_blog` | Delete a post (requires `confirm: true`, irreversible) |
-
-**Blog fields:** `title`, `body`, `excerpt`, `slug`, `cover_image`, `tags`, `status`, `published_at`, `reading_time`, `seo_title`, `seo_description`
-
----
+**Fields:** `title`, `body`, `excerpt`, `slug`, `cover_image`, `tags`, `status`, `published_at`, `reading_time`, `seo_title`, `seo_description`
 
 ### Media (3 tools)
-
-| Tool | Description |
-|------|-------------|
-| `upload_media_from_url` | Fetch a public image URL and upload to your media endpoint as multipart binary |
-| `list_media` | List uploaded media files |
-| `delete_media` | Delete a media file |
-
-Upload is SSRF-protected — no private IPs, loopback, or AWS metadata. MIME type detected from magic bytes, not the Content-Type header.
-
----
+`upload_media_from_url` · `list_media` · `delete_media`
 
 ### GitHub (3 tools)
+`scan_repo` · `sync_repo_to_project` · `list_repos`
 
-| Tool | Description |
-|------|-------------|
-| `scan_repo` | Scan a repo and extract title, description, tech stack, live URL, commits, README preview |
-| `sync_repo_to_project` | One command: GitHub repo → project entry |
-| `list_repos` | List repos for a user/org |
-
-`scan_repo` detects 30+ technologies from README content, `package.json`, `requirements.txt`, and repo topics.
-
----
-
-### Introspection (6 tools)
-
-| Tool | Description |
-|------|-------------|
-| `discover_api` | Scan your API for OpenAPI/Swagger spec and suggest endpoint config |
-| `apply_discovered_endpoints` | Apply suggested endpoints from `discover_api` |
-| `check_policies` | Check a record against your `policies.json` rules |
-| `init_policies` | Generate a starter `cms-mcp.policies.json` file |
-| `cache_stats` | Show SQLite cache statistics |
-| `clear_cache` | Clear the schema/OpenAPI cache |
-
----
+### Introspection (7 tools)
+`discover_api` · `apply_discovered_endpoints` · `check_policies` · `init_policies` · `cache_stats` · `clear_cache` · **`inspect_endpoint_schema`**
 
 ### Search (3 tools)
-
-| Tool | Description |
-|------|-------------|
-| `semantic_search` | Search indexed content by meaning using TF-IDF cosine similarity |
-| `sync_all_content` | Pull all projects/blogs and index them in the vector cache |
-| `knowledge_status` | Show vector cache stats and circuit breaker state |
-
----
+`semantic_search` · `sync_all_content` · `knowledge_status`
 
 ### MCP Resources
-
-Claude can read content directly as MCP Resources (no tool call needed):
-
 ```
 cms://projects          → List all projects
-cms://projects/{id}     → Read a specific project (HTML→Markdown, junk fields stripped)
+cms://projects/{id}     → Read a single project (distilled HTML→Markdown)
 cms://blogs             → List all blog posts
-cms://blogs/{id}        → Read a specific blog post (distilled for LLM context)
+cms://blogs/{id}        → Read a single blog post (distilled)
 ```
 
 ---
 
 ## Advanced Features
 
-### Semantic Search
+### Human Approval Gate 🆕
 
+The killer enterprise feature. When enabled, every write operation pauses and waits for a human to approve in a local browser UI — no code changes required.
+
+**Enable:**
 ```bash
-# First, index your content
-"Sync all my content for search"
-
-# Then search by meaning
-"What did we build for the fintech client?"
-"Find all blog posts about CSS"
-"Which projects use PostgreSQL?"
+npx cms-mcp --config ./config.json --approval
 ```
 
-Scores: >80% strong match, 50–80% related, 20–50% tangential, <20% filtered out.
+Or in config:
+```json
+{
+  "approvals": {
+    "port": 2323,
+    "tools": ["publish_project", "publish_blog", "delete_project", "delete_blog"]
+  }
+}
+```
+
+**Flow:**
+1. Claude calls `publish_project`
+2. cms-mcp prints: `Approval required — open http://localhost:2323`
+3. Browser shows the diff preview with Approve / Reject buttons
+4. You click Approve → write executes
+5. You click Reject → Claude is told the operation was rejected
+
+The dashboard uses Server-Sent Events for real-time updates. Multiple pending approvals stack as cards. Auto-rejects after 5 minutes (configurable with `timeoutMs`).
+
+See [docs/advanced/approval-gate.md](./docs/advanced/approval-gate.md).
+
+### Semantic Search with Real Embeddings 🆕
+
+**Default (TF-IDF, no API key needed):**
+```json
+{ "schemaCache": { "path": "~/.cms-mcp/schema.db" } }
+```
+
+**OpenAI embeddings (true semantic similarity):**
+```json
+{
+  "schemaCache": { "path": "~/.cms-mcp/schema.db" },
+  "embedding": {
+    "provider": "openai",
+    "apiKey": "env:OPENAI_API_KEY",
+    "model": "text-embedding-3-small"
+  }
+}
+```
+
+With OpenAI embeddings, searching for "LSTM" finds posts about "neural networks" and "deep learning" — real semantic understanding, not keyword matching.
+
+```
+"Have I written about machine learning before? Link to it in this new article."
+→ Found: Deep Learning Fundamentals (87% match), Neural Net Tutorial (73% match)
+```
 
 See [docs/advanced/vector-search.md](./docs/advanced/vector-search.md).
 
+### Auto-Schema Inspector 🆕
+
+Fetches live records from any configured endpoint and infers the schema:
+
+```
+"Inspect the schema of my projects endpoint"
+```
+
+Output:
+```
+## Schema: /api/projects
+
+Sampled 5 records — 12 fields detected
+
+| Field        | Type                    | Required | Example          |
+|--------------|-------------------------|----------|------------------|
+| id           | uuid                    | ✓        | "abc123-..."     |
+| title        | string                  | ✓        | "My Project"     |
+| status       | enum(draft|published)   | ✓        | "draft"          |
+| slug         | slug                    | ✓        | "my-project"     |
+| cover_image  | url?                    | —        | "https://cdn..." |
+| tags         | array                   | —        | ["react", "ts"]  |
+| published_at | date?                   | —        | "2024-01-15T..." |
+```
+
+Now Claude knows exactly what fields exist and what values they accept.
+
 ### Policy Engine
 
-Create `cms-mcp.policies.json` to enforce publishing standards:
+Enforce publishing standards with `cms-mcp.policies.json`:
 
 ```json
 {
@@ -382,83 +370,61 @@ Create `cms-mcp.policies.json` to enforce publishing standards:
   "rules": [
     {
       "type": "required_fields",
-      "fields": ["title", "cover_image", "seo_title", "seo_description"],
-      "tools": ["publish_blog", "publish_project"],
-      "message": "Cover image and SEO fields are required before publishing"
+      "fields": ["cover_image", "seo_title", "seo_description"],
+      "tools": ["publish_blog", "publish_project"]
     },
     {
       "type": "forbidden_words",
-      "fields": ["title", "body", "description"],
-      "words": ["TODO", "lorem ipsum", "placeholder", "test test"],
+      "fields": ["title", "body"],
+      "words": ["TODO", "lorem ipsum", "placeholder"],
       "tools": ["create_blog", "update_blog", "publish_blog"]
     },
     {
       "type": "min_tags",
       "min": 2,
       "tools": ["publish_project", "publish_blog"]
-    },
-    {
-      "type": "seo_required",
-      "tools": ["publish_blog", "publish_project"]
     }
   ]
 }
 ```
 
-**All 10 rule types:** `required_fields`, `min_tags`, `max_tags`, `min_length`, `max_length`, `forbidden_words`, `require_cover_image`, `seo_required`, `regex_match`, `status_transition`
+All 10 rule types: `required_fields`, `min_tags`, `max_tags`, `min_length`, `max_length`, `forbidden_words`, `require_cover_image`, `seo_required`, `regex_match`, `status_transition`
 
-Generate a starter file:
-```
-"Initialize policies for my CMS"
-```
+Generate a starter file: `"Initialize policies for my CMS"`
 
 See [docs/advanced/policy-engine.md](./docs/advanced/policy-engine.md).
 
 ### OpenAPI Auto-Discovery
 
-On startup, cms-mcp tries 10 common OpenAPI spec paths. If found, it suggests endpoint config:
-
+On startup, cms-mcp scans your API for Swagger/OpenAPI specs and suggests endpoint config:
 ```
 "Discover what APIs are available"
 ```
-
-Disable with `--no-discover`. Override the discovery URL in config with `openapi.discoveryUrl`.
-
-See [docs/advanced/openapi-discovery.md](./docs/advanced/openapi-discovery.md).
+Disable: `--no-discover`. Override URL: `openapi.discoveryUrl` in config.
 
 ### GitHub Webhook Mode
 
-Push to GitHub → auto-create a draft project entry:
-
+Auto-create shadow draft projects on every push:
 ```bash
 npx cms-mcp --config ./config.json --webhook
 ```
 
-Configure your GitHub repo to send webhooks to your server's URL. Secured with HMAC-SHA256 signature verification.
-
-See [docs/advanced/webhook-mode.md](./docs/advanced/webhook-mode.md).
-
 ### Circuit Breaker
 
-If your CMS API goes down, cms-mcp serves cached responses instead of errors:
-
+Serves cached responses when your API goes down:
 ```
-CLOSED → (5 consecutive failures) → OPEN → (30s cooldown) → HALF-OPEN → test → CLOSED
+CLOSED → (5 failures) → OPEN → (30s) → HALF-OPEN → test → CLOSED
 ```
-
-Check status: `"Show knowledge status"`
-
-See [docs/advanced/circuit-breaker.md](./docs/advanced/circuit-breaker.md).
 
 ---
 
 ## Adapting to Your CMS
 
-cms-mcp is designed to work with **any REST API** out of the box. Here's how to adapt it:
+cms-mcp works with **any REST API** out of the box.
 
 ### API response shapes
 
-cms-mcp auto-normalizes these list response shapes:
+These list response shapes are all normalized automatically:
 
 ```json
 [{...}]                  // raw array
@@ -466,70 +432,43 @@ cms-mcp auto-normalizes these list response shapes:
 { "items": [...] }       // items wrapper
 { "results": [...] }     // results wrapper
 { "records": [...] }     // records wrapper
-{ "entries": [...] }     // entries wrapper (Contentful, etc.)
-{ "nodes": [...] }       // nodes wrapper (GraphQL-style)
+{ "entries": [...] }     // entries (Contentful)
+{ "nodes": [...] }       // nodes (GraphQL-style)
 { "collection": [...] }  // collection wrapper
-{ "posts": [...] }       // named wrapper (blogs)
-{ "articles": [...] }    // named wrapper (blogs)
-{ "projects": [...] }    // named wrapper (projects)
+{ "posts": [...] }       // named wrapper
+{ "articles": [...] }    // named wrapper
+{ "projects": [...] }    // named wrapper
 ```
-
-If your API uses a different wrapper key, open an issue or submit a PR to add it to `normalizeList()` in `src/tools/projects.ts` and `src/tools/blogs.ts`.
 
 ### Field names
 
-The tools use standard REST field name conventions:
+The tools use standard conventions. Most CMSes match these out of the box:
 
-| Tool field | Expected by API |
-|-----------|-----------------|
-| `title` | `title` or `name` |
-| `body` | `body`, `content`, or `description` |
-| `slug` | `slug` |
-| `status` | `status` |
-| `tags` | `tags` |
-| `cover_image` | `cover_image`, `coverImage`, or `thumbnail` |
-| `published_at` | `published_at` or `publishedAt` |
+| Tool field | Common API equivalents |
+|-----------|------------------------|
+| `title` | `title`, `name` |
+| `body` | `body`, `content`, `description` |
+| `slug` | `slug`, `handle`, `url_key` |
+| `status` | `status`, `state` |
+| `tags` | `tags`, `labels`, `categories` |
+| `cover_image` | `cover_image`, `coverImage`, `thumbnail`, `featured_image` |
 
-If your API expects different field names (e.g., `name` instead of `title`, `content` instead of `body`), you have a few options:
-
-1. **Map at the API layer** — use your CMS's middleware or a thin adapter to remap fields
-2. **Contribute a custom tool** — see [Adding Custom Tools](#adding-custom-tools) below
-3. **Use middleware endpoints** — point `endpoints.blogs` at a custom route that remaps fields before hitting your CMS
-
-### Endpoint compatibility
-
-Any CMS that supports these HTTP patterns works:
-
-```
-GET    /endpoint          → list records
-GET    /endpoint/:id      → get single record
-POST   /endpoint          → create record
-PATCH  /endpoint/:id      → update record
-DELETE /endpoint/:id      → delete record
-```
-
-Endpoints that use `PUT` instead of `PATCH` for updates — add a note in the issue tracker. This is a planned addition.
+If your API uses different field names, either map at the API layer or contribute a field adapter.
 
 ### Status values
 
-The project tools use `draft`, `published`, and `archived`. Blog tools use `draft` and `published`. If your CMS uses different status values (e.g., `active`/`inactive`, `live`/`preview`), you can adapt the Zod enum in `src/tools/projects.ts`:
+Default status enums: projects use `draft | published | archived`, blogs use `draft | published`. To change them, edit the Zod enum in `src/tools/projects.ts` or `src/tools/blogs.ts`.
 
-```typescript
-status: z.enum(["draft", "published", "archived"]).default("draft"),
-// → Change to match your CMS:
-status: z.enum(["draft", "live", "archived"]).default("draft"),
-```
-
-### CMSes tested with
+### CMSes confirmed working
 
 | CMS | Auth type | Notes |
 |-----|-----------|-------|
 | **Supabase** (PostgREST) | `bearer` or `api-key` | Use `apikey` header for anon key |
-| **PocketBase** | `bearer` | Token from `/api/collections/users/auth-with-password` |
+| **PocketBase** | `bearer` | Auth token from `/api/collections/users/auth-with-password` |
 | **Payload CMS** | `bearer` | Token from `/api/users/login` |
 | **Directus** | `bearer` | Static token from user settings |
 | **Strapi** | `bearer` | Token from API Token settings |
-| **Custom Next.js API** | `bearer` or `none` | Your own auth middleware |
+| **Custom Next.js API** | `bearer` or `none` | Your middleware handles auth |
 
 See [`examples/`](./examples/) for ready-made config files.
 
@@ -537,24 +476,18 @@ See [`examples/`](./examples/) for ready-made config files.
 
 ## Adding Custom Tools
 
-cms-mcp is designed to be extended. Adding a new tool takes about 20 lines.
+Every cms-mcp tool follows the same 20-line pattern. Adding a new resource type takes about 5 minutes.
 
-### Example: add a `list_tags` tool
+### Example: `list_tags` tool
 
-**1. Add the endpoint to your config:**
+**1. Add endpoint to config:**
 ```json
-{
-  "endpoints": {
-    "tags": "/tags"
-  }
-}
+{ "endpoints": { "tags": "/tags" } }
 ```
 
-**2. Add the endpoint to the config schema** (`src/lib/config.ts`):
+**2. Add to `EndpointsSchema` in `src/lib/config.ts`** (already there — just set it in config).
 
-The `tags` endpoint is already in the schema — just set it in your config.
-
-**3. Create or extend a tool file** (e.g., `src/tools/tags.ts`):
+**3. Create `src/tools/tags.ts`:**
 
 ```typescript
 import { z } from "zod";
@@ -563,11 +496,7 @@ import type { Config } from "../lib/config.js";
 import { ApiClient } from "../lib/api-client.js";
 import { AuditLogger, withAudit } from "../lib/audit.js";
 
-export function registerTagTools(
-  server: McpServer,
-  config: Config,
-  audit: AuditLogger,
-): void {
+export function registerTagTools(server: McpServer, config: Config, audit: AuditLogger): void {
   const endpoint = config.endpoints.tags;
   if (!endpoint) return;
 
@@ -581,10 +510,7 @@ export function registerTagTools(
         const data = await client.get<unknown>(endpoint, { limit: args.limit });
         const items = Array.isArray(data) ? data : (data as any).items ?? [];
         return {
-          content: [{
-            type: "text" as const,
-            text: `Tags: ${items.map((t: any) => t.name ?? t.slug).join(", ")}`,
-          }],
+          content: [{ type: "text" as const, text: `Tags: ${items.map((t: any) => t.name).join(", ")}` }],
         };
       });
     },
@@ -592,79 +518,63 @@ export function registerTagTools(
 }
 ```
 
-**4. Register it in `src/index.ts`:**
-
+**4. Register in `src/index.ts`:**
 ```typescript
 import { registerTagTools } from "./tools/tags.js";
-
-// Inside the main() function, after other tool registrations:
+// Inside main():
 registerTagTools(server, config, audit);
 ```
 
-**5. Rebuild:**
+**5. Build:**
 ```bash
 npm run build
 ```
 
-### Tool patterns
-
-Every cms-mcp tool follows the same pattern:
+### Write tool pattern (with approval gate)
 
 ```typescript
-server.tool(
-  "tool_name",
-  { /* Zod schema for inputs */ },
-  async (args) => {
-    return withAudit(audit, "tool_name", args, async () => {
-      // Your logic here
-      return {
-        content: [{ type: "text" as const, text: "result" }],
-      };
-    });
-  },
-);
+server.tool("create_thing", { ...Schema.shape, confirm: z.literal(true) }, async (args) => {
+  if (config.readOnly) return readOnlyBlock("create_thing");
+
+  return withAudit(audit, "create_thing", args, async () => {
+    const parsed = Schema.safeParse(args);
+    if (!parsed.success) return validationError(parsed.error);
+
+    // Show diff preview
+    const preview = buildCreatePreview(parsed.data);
+
+    // Gate check — pauses if approval gate is enabled
+    const blocked = await checkGate(gate, "create_thing", args, preview, config.approvals?.tools);
+    if (blocked) return blocked;
+
+    // Execute
+    const result = await client.post(endpoint, parsed.data);
+    return { content: [{ type: "text", text: `✅ Created: ${result.id}` }] };
+  });
+});
 ```
 
-`withAudit` handles timing, logging, and error capture automatically.
-
-For write tools, add `if (config.readOnly) return readOnlyBlock("tool_name");` at the top.
-
-For destructive tools, require `confirm: z.literal(true)` in the input schema.
-
-### Adding a new endpoint type
-
-If you want to manage a completely new resource type (e.g., `testimonials`, `case-studies`, `events`):
-
-1. Add it to `EndpointsSchema` in `src/lib/config.ts`
-2. Create `src/tools/your-resource.ts` following the blog/project tool pattern
-3. Register in `src/index.ts`
-4. Write tests in `tests/your-resource.test.ts`
-5. Add docs in `docs/tools/your-resource.md`
-6. Submit a PR
+`withAudit` handles timing and error logging. `checkGate` handles human approval if configured. Both are no-ops when not enabled.
 
 ---
 
 ## Security
 
-cms-mcp is designed to run with API credentials and be trusted with write access to your CMS.
-
 | Protection | Detail |
 |-----------|--------|
-| **SSRF protection** | `assertSafeUrl()` blocks private IPs (RFC 1918), loopback, link-local (169.254.x.x), AWS metadata, IPv6 ULA/loopback, non-HTTP schemes |
-| **No redirect following** | `redirect: "error"` on all `fetch()` calls — prevents auth header leakage via redirect |
-| **30-second timeouts** | Every outbound request uses `AbortController` — no hanging requests |
-| **50 MB media cap** | Rejects oversized uploads before buffering — prevents memory exhaustion |
-| **Secret redaction** | Regex-based recursive redaction covers all common secret field names (`token`, `password`, `secret`, `key`, `auth*`, `credential*`) |
-| **Input validation** | Zod schemas on every tool — types, lengths, formats, URL validity |
-| **Confirm guards** | All create/update/delete operations require explicit `confirm: true` |
-| **Webhook HMAC** | GitHub webhooks verified with constant-time SHA-256 comparison |
-| **Payload limits** | 5 MB webhook body cap — rejects oversized payloads at HTTP level |
-| **Read-only mode** | `--readonly` flag or `readOnly: true` config disables all write tools |
-| **Audit logging** | Complete, tamper-evident log of every tool call with args, outcome, and duration |
+| **SSRF** | Blocks private IPs (RFC 1918), loopback, link-local, AWS metadata, IPv6 ULA, non-HTTP schemes |
+| **No redirect following** | `redirect: "error"` on all fetch calls — prevents auth header leakage |
+| **Timeouts** | 30s `AbortController` on every outbound request |
+| **Media cap** | 50 MB upload limit — prevents memory exhaustion |
+| **Secret redaction** | Recursive regex-based redaction of all secret field names in audit logs |
+| **Input validation** | Zod schemas on every tool, GitHub names validated against character allowlists |
+| **Confirm guards** | All destructive operations require `confirm: true` |
+| **Approval gate** | Human-in-the-loop click required before write executes |
+| **Webhook HMAC** | Constant-time SHA-256 signature verification |
+| **Payload limits** | 5 MB webhook body cap |
+| **Read-only mode** | `--readonly` disables all writes |
 
-For credential management and production deployment: [docs/security.md](./docs/security.md)
-
-To report a vulnerability: [SECURITY.md](./SECURITY.md)
+See [docs/security.md](./docs/security.md) · [SECURITY.md](./SECURITY.md) to report vulnerabilities.
 
 ---
 
@@ -674,77 +584,71 @@ To report a vulnerability: [SECURITY.md](./SECURITY.md)
 npm test
 ```
 
-**76 tests, 6 suites, 0 external dependencies:**
+**78 tests, 6 suites, Node native test runner:**
 
-| Suite | Tests | What's covered |
-|-------|-------|----------------|
-| Policy Engine | 15 | All 10 rule types, tool scoping, multi-rule violations, edge cases |
-| Content Distiller | 14 | HTML→Markdown (11 cases), field stripping, metadata headers, full pipeline |
-| Circuit Breaker | 10 | Full CLOSED→OPEN→HALF-OPEN lifecycle, cached fallback, manual reset, status |
-| Vector Cache | 8 | Store, TF-IDF search, type filtering, unrelated queries, clear operations |
+| Suite | Tests | Coverage |
+|-------|-------|---------|
+| Policy Engine | 15 | All 10 rule types, tool scoping, multi-rule violations |
+| Content Distiller | 14 | HTML→Markdown, field stripping, metadata headers, pipeline |
+| Circuit Breaker | 10 | Full lifecycle, cached fallback, reset, status |
+| Vector Cache | 10 | Store, async search, TF-IDF, custom embedFn, type filter, clear |
 | OpenAPI | 6 | Formatting, empty resources, missing fields |
-| Security | 23 | SSRF (15 URL patterns), input edge cases, null bytes, long URLs, auth URLs |
+| Security | 23 | SSRF (15 URL patterns), null bytes, long URLs, auth URLs |
 
-Uses Node.js native test runner — no Jest, Mocha, or Vitest required.
+No Jest, Mocha, or Vitest — uses Node.js native `--test`.
 
 ---
 
 ## Docker
 
-```dockerfile
-# Build image
+```bash
+# Build and run
 docker build -t cms-mcp .
-
-# Run with config
 docker run -v $(pwd)/cms-mcp.config.json:/app/config.json \
   -e CMS_API_TOKEN=your-token \
   cms-mcp --config /app/config.json
-```
 
-Or with docker-compose:
-
-```bash
-# Edit docker-compose.yml to set your env vars, then:
+# Or with compose
 docker compose up
 ```
 
-The Docker image uses a multi-stage build — only compiled JS and production dependencies ship in the final layer (~80MB).
+Multi-stage build — compiled JS + production deps only (~80MB image).
 
 ---
 
 ## Documentation
 
-| Guide | |
-|-------|-|
+| | |
+|-|-|
 | [Getting Started](./docs/getting-started.md) | Install, configure, first conversation |
 | [Configuration](./docs/configuration.md) | Full config schema reference |
-| [Project Tools](./docs/tools/projects.md) | All 8 project tools with input/output examples |
+| [Project Tools](./docs/tools/projects.md) | All 8 project tools with examples |
 | [Blog Tools](./docs/tools/blogs.md) | All 9 blog tools with examples |
-| [Media Tools](./docs/tools/media.md) | Upload, list, delete media |
-| [GitHub Tools](./docs/tools/github.md) | Scan repos, sync to projects, list repos |
-| [OpenAPI Discovery](./docs/advanced/openapi-discovery.md) | Auto-detect API endpoints from spec |
-| [Policy Engine](./docs/advanced/policy-engine.md) | Enforce publishing standards |
-| [Webhook Mode](./docs/advanced/webhook-mode.md) | GitHub push → shadow drafts |
-| [Schema Cache](./docs/advanced/schema-cache.md) | SQLite caching with TTL |
-| [Vector Search](./docs/advanced/vector-search.md) | TF-IDF semantic search |
-| [Circuit Breaker](./docs/advanced/circuit-breaker.md) | Graceful API failure handling |
-| [Content Distillation](./docs/advanced/content-distillation.md) | HTML→Markdown, junk stripping |
-| [Security Guide](./docs/security.md) | Operator security reference |
-| [Roadmap](./docs/roadmap.md) | Planned features (Phase 2 & 3) |
+| [Media Tools](./docs/tools/media.md) | Upload, list, delete |
+| [GitHub Tools](./docs/tools/github.md) | Scan, sync, list repos |
+| [Approval Gate](./docs/advanced/approval-gate.md) | Human-in-the-loop setup |
+| [OpenAI Embeddings](./docs/advanced/vector-search.md) | Semantic search setup |
+| [Schema Inspector](./docs/advanced/openapi-discovery.md) | Auto-schema detection |
+| [Policy Engine](./docs/advanced/policy-engine.md) | Publishing standards |
+| [Webhook Mode](./docs/advanced/webhook-mode.md) | GitHub push → drafts |
+| [Circuit Breaker](./docs/advanced/circuit-breaker.md) | API failure handling |
+| [Content Distillation](./docs/advanced/content-distillation.md) | HTML→Markdown |
+| [Security Guide](./docs/security.md) | Operator reference |
+| [Roadmap](./docs/roadmap.md) | What's next |
 
 ---
 
 ## Contributing
 
-Contributions welcome — bug fixes, new CMS adapters, additional tool types, or documentation.
+Issues, PRs, and CMS adapter examples welcome.
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for the development workflow, code conventions, and how to add new tools.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the dev workflow.
 
-**Good first issues:**
-- Add support for a new CMS in the examples folder
+**Good first contributions:**
+- Add a CMS config to `examples/` (Directus, Strapi, Payload, etc.)
 - Add `PUT` support alongside `PATCH` for APIs that require it
-- Expand the `normalizeList` response parser for a new API shape you encounter
-- Write tests for an edge case you discover
+- Write tests for an edge case you find
+- Add a new policy rule type
 
 ---
 
@@ -754,6 +658,6 @@ MIT — see [LICENSE](./LICENSE).
 
 ---
 
-<p align="center">
-  Built for the <a href="https://modelcontextprotocol.io">Model Context Protocol</a> ecosystem
-</p>
+<div align="center">
+  <sub>Built for the <a href="https://modelcontextprotocol.io">Model Context Protocol</a> ecosystem</sub>
+</div>

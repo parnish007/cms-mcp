@@ -8,6 +8,7 @@ import { ApiClient } from "../lib/api-client.js";
 import { AuditLogger, withAudit } from "../lib/audit.js";
 import { buildCreatePreview, buildUpdatePreview } from "../lib/diff.js";
 import { runWithTransaction, deleteRollback } from "../lib/transaction.js";
+import { type ApprovalGate, checkGate } from "../lib/approval-gate.js";
 
 // ─── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -35,6 +36,7 @@ export function registerBlogTools(
   server: McpServer,
   config: Config,
   audit: AuditLogger,
+  gate?: ApprovalGate | null,
 ): void {
   const endpoint = config.endpoints.blogs;
 
@@ -136,6 +138,10 @@ export function registerBlogTools(
           };
         }
 
+        const preview = buildCreatePreview(parsed.data as Record<string, unknown>);
+        const blocked = await checkGate(gate, "create_blog", args as Record<string, unknown>, preview, config.approvals?.tools);
+        if (blocked) return blocked;
+
         const created = await runWithTransaction(async (tx) => {
           const result = await client.post<Record<string, unknown>>(endpoint, parsed.data);
           const id = String(result["id"] ?? result["_id"] ?? "");
@@ -194,6 +200,9 @@ export function registerBlogTools(
         }
 
         const current = await client.get<Record<string, unknown>>(`${endpoint}/${id}`);
+        const preview = buildUpdatePreview(current, updates as Record<string, unknown>);
+        const blocked = await checkGate(gate, "update_blog", args as Record<string, unknown>, preview, config.approvals?.tools);
+        if (blocked) return blocked;
 
         await runWithTransaction(async (tx) => {
           tx.addStep(`Update blog ${id}`, async () => {
@@ -222,6 +231,10 @@ export function registerBlogTools(
       if (config.readOnly) return readOnlyBlock("publish_blog");
 
       return withAudit(audit, "publish_blog", args, async () => {
+        const preview = `Publish blog post ${args.id} — set status → "published"`;
+        const blocked = await checkGate(gate, "publish_blog", args as Record<string, unknown>, preview, config.approvals?.tools);
+        if (blocked) return blocked;
+
         await client.patch(`${endpoint}/${args.id}`, {
           status: "published",
           published_at: new Date().toISOString(),
@@ -259,6 +272,10 @@ export function registerBlogTools(
       if (config.readOnly) return readOnlyBlock("delete_blog");
 
       return withAudit(audit, "delete_blog", args, async () => {
+        const preview = `⚠️ DELETE blog post ${args.id} — this is irreversible`;
+        const blocked = await checkGate(gate, "delete_blog", args as Record<string, unknown>, preview, config.approvals?.tools);
+        if (blocked) return blocked;
+
         await client.delete(`${endpoint}/${args.id}`);
         return {
           content: [{ type: "text" as const, text: `🗑️ Blog post ${args.id} deleted.` }],

@@ -11,6 +11,8 @@ import { discoverOpenApi, formatDiscoveryResult } from "../lib/openapi.js";
 import { loadPolicies, runPolicies, buildExamplePolicies } from "../lib/policy.js";
 import type { SchemaCache } from "../lib/schema-cache.js";
 import { openApiCacheKey } from "../lib/schema-cache.js";
+import { ApiClient } from "../lib/api-client.js";
+import { inspectEndpoint } from "../lib/schema-inspector.js";
 
 export function registerIntrospectTools(
   server: McpServer,
@@ -18,6 +20,7 @@ export function registerIntrospectTools(
   audit: AuditLogger,
   cache?: SchemaCache,
 ): void {
+  const client = new ApiClient(config);
 
   // ── discover_api ──────────────────────────────────────────────────────────
 
@@ -292,6 +295,42 @@ export function registerIntrospectTools(
             type: "text" as const,
             text: `🗑️ Cleared ${cleared} cache entries. Next \`discover_api\` call will re-fetch live.`,
           }],
+        };
+      });
+    },
+  );
+
+  // ── inspect_endpoint_schema ───────────────────────────────────────────────
+
+  server.tool(
+    "inspect_endpoint_schema",
+    {
+      endpoint: z.enum(["projects", "blogs", "media"])
+        .describe("Which configured endpoint to inspect — fetches live records and infers field types"),
+    },
+    async (args) => {
+      return withAudit(audit, "inspect_endpoint_schema", args as Record<string, unknown>, async () => {
+        const endpointUrl = config.endpoints[args.endpoint as keyof typeof config.endpoints];
+
+        if (!endpointUrl) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: [
+                `No \`${args.endpoint}\` endpoint configured.`,
+                ``,
+                `Add it to your cms-mcp.config.json:`,
+                `\`\`\`json`,
+                `"endpoints": { "${args.endpoint}": "/${args.endpoint}" }`,
+                `\`\`\``,
+              ].join("\n"),
+            }],
+          };
+        }
+
+        const report = await inspectEndpoint(client, endpointUrl);
+        return {
+          content: [{ type: "text" as const, text: report }],
         };
       });
     },

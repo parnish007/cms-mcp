@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // src/index.ts
-// cms-mcp v0.2.0 entry point.
-// Wires all tools, resources, circuit breaker, vector cache,
-// schema cache, OpenAPI discovery, webhook server, and stdio transport.
+// cms-mcp v0.3.0 entry point.
+// Wires all tools, resources, circuit breaker, vector cache, schema cache,
+// OpenAPI discovery, webhook server, approval gate, and stdio transport.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -14,6 +14,8 @@ import { AuditLogger } from "./lib/audit.js";
 import { CircuitBreaker } from "./lib/circuit-breaker.js";
 import { SchemaCache, openApiCacheKey } from "./lib/schema-cache.js";
 import { VectorCache } from "./lib/vector-cache.js";
+import { createOpenAIEmbedFn } from "./lib/embeddings.js";
+import { ApprovalGate } from "./lib/approval-gate.js";
 import { discoverOpenApi } from "./lib/openapi.js";
 import { startWebhookServer } from "./lib/webhook.js";
 import { registerResources } from "./lib/resources.js";
@@ -30,6 +32,7 @@ const args = process.argv.slice(2);
 const readOnlyFlag   = args.includes("--readonly") || args.includes("--read-only");
 const webhookFlag    = args.includes("--webhook");
 const noDiscoverFlag = args.includes("--no-discover");
+const approvalFlag   = args.includes("--approval");
 
 const configFlag = (() => {
   const idx = args.findIndex((a) => a === "--config" || a === "-c");
@@ -74,27 +77,50 @@ async function main() {
     schemaCache = new SchemaCache(config.schemaCache.path, config.schemaCache.ttlMinutes);
   }
 
+  // ── Embedding provider (optional OpenAI) ───────────────────────────────────
+  const embedFn = config.embedding?.provider === "openai"
+    ? createOpenAIEmbedFn(config.embedding.apiKey, config.embedding.model)
+    : undefined;
+
   // ── Vector Cache (Semantic Search) ─────────────────────────────────────────
   let vectorCache: VectorCache | undefined;
   if (config.schemaCache) {
     const vectorPath = config.schemaCache.path.replace(/\.db$/, "-vectors.db");
-    vectorCache = new VectorCache(vectorPath);
+    vectorCache = new VectorCache(vectorPath, embedFn);
+  }
+
+  // ── Approval Gate (Human-in-the-loop) ─────────────────────────────────────
+  let gate: ApprovalGate | null = null;
+  if (approvalFlag || config.approvals) {
+    const port      = config.approvals?.port ?? 2323;
+    const timeoutMs = config.approvals?.timeoutMs ?? 300_000;
+    gate = new ApprovalGate(port, timeoutMs);
+    try {
+      await gate.start();
+    } catch (err) {
+      process.stderr.write(
+        `  [approval-gate] Failed to start: ${err instanceof Error ? err.message : String(err)}\n` +
+        `  [approval-gate] Continuing without approval gate.\n\n`,
+      );
+      gate = null;
+    }
   }
 
   // ── MCP Server ─────────────────────────────────────────────────────────────
   const server = new McpServer({
     name: "cms-mcp",
-    version: "0.2.0",
+    version: "0.3.0",
     description: "Universal agentic CMS server — manage blogs, projects, and media through Claude. " +
-                 "Supports semantic search, OpenAPI discovery, policy enforcement, and GitHub sync.",
+                 "Supports semantic search, OpenAPI discovery, policy enforcement, GitHub sync, " +
+                 "and human-in-the-loop approval gates.",
   });
 
   // ── Register MCP Resources ─────────────────────────────────────────────────
   registerResources(server, config, vectorCache);
 
   // ── Register Tools ─────────────────────────────────────────────────────────
-  registerProjectTools(server, config, audit);
-  registerBlogTools(server, config, audit);
+  registerProjectTools(server, config, audit, gate);
+  registerBlogTools(server, config, audit, gate);
   registerMediaTools(server, config, audit);
   registerGitHubTools(server, config, audit);
   registerIntrospectTools(server, config, audit, schemaCache);
@@ -103,18 +129,21 @@ async function main() {
   // ── Startup Banner ─────────────────────────────────────────────────────────
   const mode = config.readOnly ? " [READ-ONLY]" : "";
   const features: string[] = [];
-  if (schemaCache) features.push("schema-cache");
-  if (vectorCache) features.push("vector-search");
-  if (config.policies) features.push("policies");
-  if (config.webhook) features.push("webhook-ready");
+  if (schemaCache)          features.push("schema-cache");
+  if (vectorCache && embedFn) features.push("openai-embeddings");
+  else if (vectorCache)     features.push("vector-search");
+  if (config.policies)      features.push("policies");
+  if (gate)                 features.push("approval-gate");
+  if (config.webhook)       features.push("webhook-ready");
 
   process.stderr.write(`\n`);
   process.stderr.write(`  ┌─────────────────────────────────┐\n`);
-  process.stderr.write(`  │  cms-mcp v0.2.0${mode.padEnd(17)}│\n`);
+  process.stderr.write(`  │  cms-mcp v0.3.0${mode.padEnd(17)}│\n`);
   process.stderr.write(`  └─────────────────────────────────┘\n`);
   process.stderr.write(`  Base URL:  ${config.baseUrl}\n`);
-  if (features.length > 0) process.stderr.write(`  Features:  ${features.join(", ")}\n`);
-  if (config.auditLog) process.stderr.write(`  Audit log: ${config.auditLog}\n`);
+  if (features.length > 0)  process.stderr.write(`  Features:  ${features.join(", ")}\n`);
+  if (gate)                 process.stderr.write(`  Approvals: http://127.0.0.1:${config.approvals?.port ?? 2323}\n`);
+  if (config.auditLog)      process.stderr.write(`  Audit log: ${config.auditLog}\n`);
   process.stderr.write(`\n`);
 
   // ── OpenAPI Auto-Discovery ─────────────────────────────────────────────────
@@ -152,6 +181,7 @@ async function main() {
   // ── Shutdown ───────────────────────────────────────────────────────────────
   async function shutdown() {
     process.stderr.write("[cms-mcp] Shutting down…\n");
+    await gate?.close();
     await closeWebhook?.();
     schemaCache?.close();
     vectorCache?.close();

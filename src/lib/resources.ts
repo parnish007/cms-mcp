@@ -39,7 +39,7 @@ export function registerResources(
         });
 
         if (vectorCache) {
-          vectorCache.store(
+          await vectorCache.store(
             id,
             "project",
             String(raw["title"] ?? ""),
@@ -104,7 +104,7 @@ export function registerResources(
         });
 
         if (vectorCache) {
-          vectorCache.store(
+          await vectorCache.store(
             id,
             "blog",
             String(raw["title"] ?? ""),

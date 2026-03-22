@@ -61,6 +61,22 @@ const OpenApiSchema = z.object({
   discoveryUrl: z.string().optional().describe("Override: exact URL of the OpenAPI/Swagger spec"),
 });
 
+const EmbeddingSchema = z.object({
+  provider: z.literal("openai"),
+  apiKey:   z.string().min(1).describe("OpenAI API key or env:OPENAI_API_KEY reference"),
+  model:    z.string().default("text-embedding-3-small")
+              .describe("Embedding model: text-embedding-3-small (1536d) or text-embedding-3-large (3072d)"),
+});
+
+const ApprovalsSchema = z.object({
+  port:      z.number().int().min(1024).max(65535).default(2323)
+               .describe("Port for the approval dashboard (localhost only)"),
+  timeoutMs: z.number().int().min(5000).default(300_000)
+               .describe("Milliseconds before auto-rejection (default: 5 minutes)"),
+  tools:     z.array(z.string()).optional()
+               .describe("Tool names to gate. If omitted, all write tools require approval."),
+});
+
 export const ConfigSchema = z.object({
   name:        z.string().optional().describe("Human-readable name for your site"),
   baseUrl:     z.string().url().describe("Base URL of your CMS API (e.g. https://yoursite.com/api)"),
@@ -73,10 +89,14 @@ export const ConfigSchema = z.object({
   webhook:     WebhookSchema.optional().describe("GitHub webhook listener config"),
   schemaCache: SchemaCacheSchema.optional().describe("SQLite schema cache config"),
   openapi:     OpenApiSchema.optional().describe("OpenAPI/Swagger auto-discovery config"),
+  embedding:   EmbeddingSchema.optional().describe("OpenAI embedding provider for semantic search"),
+  approvals:   ApprovalsSchema.optional().describe("Human-in-the-loop approval gate config"),
 });
 
-export type Config      = z.infer<typeof ConfigSchema>;
-export type WebhookConf = z.infer<typeof WebhookSchema>;
+export type Config         = z.infer<typeof ConfigSchema>;
+export type WebhookConf    = z.infer<typeof WebhookSchema>;
+export type EmbeddingConf  = z.infer<typeof EmbeddingSchema>;
+export type ApprovalsConf  = z.infer<typeof ApprovalsSchema>;
 
 // ─── Secret Resolution ────────────────────────────────────────────────────────
 
@@ -111,6 +131,9 @@ function resolveSecrets(config: Config): Config {
   }
   if (config.webhook) {
     config.webhook.secret = resolveSecret(config.webhook.secret);
+  }
+  if (config.embedding) {
+    config.embedding.apiKey = resolveSecret(config.embedding.apiKey);
   }
   return config;
 }

@@ -1,5 +1,6 @@
 // tests/vector-cache.test.ts
 // Vector cache & semantic search tests.
+// store() and search() are now async (supports both TF-IDF and OpenAI embeddings).
 
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
@@ -13,7 +14,6 @@ describe("VectorBuilder", () => {
   it("tokenizes and removes stop words", () => {
     const builder = new VectorBuilder();
     builder.buildVocabulary(["The quick brown fox jumps over the lazy dog"]);
-    // "the", "over" are stop words
     assert.ok(builder.getVocabSize() > 0);
   });
 
@@ -23,7 +23,7 @@ describe("VectorBuilder", () => {
 
     const vec = builder.vectorize("React project");
     const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0));
-    assert.ok(Math.abs(norm - 1.0) < 0.01 || norm === 0); // Normalized to ~1
+    assert.ok(Math.abs(norm - 1.0) < 0.01 || norm === 0);
   });
 });
 
@@ -39,16 +39,16 @@ describe("VectorCache", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("stores and retrieves entries", () => {
-    cache.store("proj-1", "project", "Scene Sorter",
+  it("stores and retrieves entries", async () => {
+    await cache.store("proj-1", "project", "Scene Sorter",
       "Scene Sorter is a Next.js app for sorting movie scenes using AI",
       { title: "Scene Sorter", tech_stack: ["Next.js", "AI"] });
 
-    cache.store("proj-2", "project", "Dashboard",
+    await cache.store("proj-2", "project", "Dashboard",
       "Financial dashboard built with React and D3 for data visualization",
       { title: "Dashboard", tech_stack: ["React", "D3"] });
 
-    cache.store("blog-1", "blog", "ML Guide",
+    await cache.store("blog-1", "blog", "ML Guide",
       "A beginner guide to machine learning with Python and scikit-learn",
       { title: "ML Guide" });
 
@@ -56,32 +56,30 @@ describe("VectorCache", () => {
     assert.equal(stats.totalEntries, 3);
     assert.equal(stats.byType["project"], 2);
     assert.equal(stats.byType["blog"], 1);
+    assert.equal(stats.embeddingMode, "tfidf");
   });
 
-  it("semantic search returns relevant results", () => {
-    // Search for terms that appear directly in the stored content
-    const results = cache.search("Next.js app sorting scenes", 5);
+  it("semantic search returns relevant results", async () => {
+    const results = await cache.search("Next.js app sorting scenes", 5);
     assert.ok(results.length > 0, `Expected results but got ${results.length}`);
-    // "Scene Sorter" should be top match (it contains "Next.js" and "sorting" and "scenes")
     assert.equal(results[0].title, "Scene Sorter");
     assert.ok(results[0].score > 0);
   });
 
-  it("filters by type", () => {
-    const results = cache.search("Python scikit learn machine", 5, "blog");
+  it("filters by type", async () => {
+    const results = await cache.search("Python scikit learn machine", 5, "blog");
     assert.ok(results.length > 0, `Expected blog results but got ${results.length}`);
     assert.ok(results.every((r) => r.type === "blog"));
   });
 
-  it("returns empty for unrelated queries", () => {
-    const results = cache.search("quantum physics nuclear reactor", 5);
-    // Should have low or zero matches
+  it("returns empty for unrelated queries", async () => {
+    const results = await cache.search("quantum physics nuclear reactor", 5);
     const highConfidence = results.filter((r) => r.score > 0.5);
     assert.equal(highConfidence.length, 0);
   });
 
-  it("clears by type", () => {
-    cache.store("temp-1", "blog", "Temp", "Temporary blog post", {});
+  it("clears by type", async () => {
+    await cache.store("temp-1", "blog", "Temp", "Temporary blog post", {});
     const cleared = cache.clear("blog");
     assert.ok(cleared >= 1);
 
@@ -89,9 +87,33 @@ describe("VectorCache", () => {
     assert.equal(stats.byType["blog"] ?? 0, 0);
   });
 
-  it("clears all entries", () => {
-    cache.store("x", "project", "X", "test", {});
+  it("clears all entries", async () => {
+    await cache.store("x", "project", "X", "test", {});
     cache.clear();
     assert.equal(cache.stats().totalEntries, 0);
+  });
+
+  it("reports tfidf mode when no embedFn provided", () => {
+    const stats = cache.stats();
+    assert.equal(stats.embeddingMode, "tfidf");
+  });
+
+  it("uses custom embedFn when provided", async () => {
+    const calls: string[] = [];
+    const mockEmbed = async (text: string) => {
+      calls.push(text);
+      return new Array(4).fill(0.5); // fixed 4-dim vector
+    };
+
+    const embeddedCache = new VectorCache(
+      join(tmpDir, "embedded-test.db"),
+      mockEmbed,
+    );
+
+    await embeddedCache.store("e-1", "project", "Test", "some test content", {});
+    assert.ok(calls.length > 0, "embedFn should have been called");
+    assert.equal(embeddedCache.stats().embeddingMode, "openai");
+
+    embeddedCache.close();
   });
 });

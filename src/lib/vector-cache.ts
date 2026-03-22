@@ -1,23 +1,24 @@
 // src/lib/vector-cache.ts
 // Semantic Vector Cache — local-first knowledge layer.
-// Stores content with TF-IDF vectors for fuzzy semantic search.
-// Zero external dependencies — no embedding API needed.
-// Uses SQLite for storage and cosine similarity for matching.
+// Default mode: TF-IDF (zero external deps, runs offline).
+// OpenAI mode: real embeddings via embedFn — true semantic similarity.
+// Storage: SQLite. Search: cosine similarity.
 
 import Database from "better-sqlite3";
 import { mkdirSync } from "fs";
 import { dirname, resolve } from "path";
 import { expandHome } from "./config.js";
+import type { EmbedFn } from "./embeddings.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface VectorEntry {
   id: string;
-  type: string;      // "project" | "blog" | "media"
+  type: string;
   title: string;
-  content: string;   // Searchable text (title + summary + body concatenated)
-  metadata: string;   // JSON string of full cleaned data
-  vector: number[];  // TF-IDF vector
+  content: string;
+  metadata: string;
+  vector: number[];
   cachedAt: number;
 }
 
@@ -25,7 +26,7 @@ export interface SearchResult {
   id: string;
   type: string;
   title: string;
-  score: number;     // Cosine similarity 0–1
+  score: number;
   metadata: Record<string, unknown>;
 }
 
@@ -34,9 +35,9 @@ export interface SearchResult {
 function tokenize(text: string): string[] {
   return text
     .toLowerCase()
-    .replace(/[^\w\s]/g, " ")  // strip punctuation
+    .replace(/[^\w\s]/g, " ")
     .split(/\s+/)
-    .filter((w) => w.length > 2)  // skip very short words
+    .filter((w) => w.length > 2)
     .filter((w) => !STOP_WORDS.has(w));
 }
 
@@ -54,9 +55,8 @@ const STOP_WORDS = new Set([
 export class VectorBuilder {
   private docFrequency = new Map<string, number>();
   private totalDocs = 0;
-  private vocabulary = new Map<string, number>(); // word → index
+  private vocabulary = new Map<string, number>();
 
-  // Build vocabulary from all stored documents
   buildVocabulary(documents: string[]): void {
     this.docFrequency.clear();
     this.vocabulary.clear();
@@ -72,7 +72,6 @@ export class VectorBuilder {
       }
     }
 
-    // Build vocab index — top 2000 most common words
     const sorted = [...allWords].sort((a, b) => {
       return (this.docFrequency.get(b) ?? 0) - (this.docFrequency.get(a) ?? 0);
     });
@@ -82,7 +81,6 @@ export class VectorBuilder {
     }
   }
 
-  // Compute TF-IDF vector for a single document
   vectorize(text: string): number[] {
     const tokens = tokenize(text);
     const vec = new Array(this.vocabulary.size).fill(0);
@@ -99,7 +97,6 @@ export class VectorBuilder {
       vec[idx] = tf * idf;
     }
 
-    // L2 normalize
     const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0));
     if (norm > 0) {
       for (let i = 0; i < vec.length; i++) vec[i] /= norm;
@@ -119,21 +116,29 @@ function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length) return 0;
   let dot = 0;
   for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
-  return dot; // Already normalized
+  return dot;
 }
 
-// ─── VectorCache class ───────────────────────────────────────────────────────
+// ─── VectorCache ─────────────────────────────────────────────────────────────
 
 export class VectorCache {
   private db: Database.Database;
   private builder: VectorBuilder;
+  private embedFn?: EmbedFn;
 
-  constructor(dbPath: string) {
+  /**
+   * @param dbPath   SQLite file path (home dir expansion supported).
+   * @param embedFn  Optional external embedding function (OpenAI).
+   *                 When set, bypasses TF-IDF entirely — vectors are fetched
+   *                 from the API and stored directly with no vocabulary rebuild.
+   */
+  constructor(dbPath: string, embedFn?: EmbedFn) {
     const resolvedPath = resolve(expandHome(dbPath));
     mkdirSync(dirname(resolvedPath), { recursive: true });
 
     this.db = new Database(resolvedPath);
     this.builder = new VectorBuilder();
+    this.embedFn = embedFn;
     this.init();
   }
 
@@ -153,32 +158,42 @@ export class VectorCache {
       CREATE INDEX IF NOT EXISTS idx_vector_type ON vector_cache (type);
     `);
 
-    // Rebuild vocabulary from existing data
-    this.rebuildVocabulary();
+    // Rebuild vocabulary from existing data (only in TF-IDF mode)
+    if (!this.embedFn) {
+      this.rebuildVocabulary();
+    }
   }
 
   // ── Store ──────────────────────────────────────────────────────────────────
 
-  store(
+  async store(
     id: string,
     type: string,
     title: string,
     content: string,
     metadata: Record<string, unknown>,
-  ): void {
-    // Insert first (with a placeholder vector), then rebuild and re-vectorize
+  ): Promise<void> {
+    if (this.embedFn) {
+      // OpenAI path: get real embedding, store directly, no vocab rebuild
+      const vec = await this.embedFn(`${title} ${content}`);
+      this.db.prepare(`
+        INSERT OR REPLACE INTO vector_cache (id, type, title, content, metadata, vector, cached_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(id, type, title, content, JSON.stringify(metadata), JSON.stringify(vec), Date.now());
+      return;
+    }
+
+    // TF-IDF path: insert placeholder, then rebuild vocabulary and re-vectorize
     const placeholder = JSON.stringify([]);
     this.db.prepare(`
       INSERT OR REPLACE INTO vector_cache (id, type, title, content, metadata, vector, cached_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(id, type, title, content, JSON.stringify(metadata), placeholder, Date.now());
 
-    // Rebuild vocabulary periodically: first 5 entries, then every 20
     const count = (this.db.prepare("SELECT COUNT(*) as n FROM vector_cache").get() as any).n;
     if (count <= 5 || count % 20 === 0) {
       this.rebuildVocabulary();
     } else {
-      // Just update this entry's vector with current vocabulary
       const vec = this.builder.vectorize(content);
       this.db.prepare("UPDATE vector_cache SET vector = ? WHERE id = ? AND type = ?")
         .run(JSON.stringify(vec), id, type);
@@ -187,17 +202,23 @@ export class VectorCache {
 
   // ── Semantic Search ────────────────────────────────────────────────────────
 
-  search(query: string, limit = 5, typeFilter?: string): SearchResult[] {
-    if (this.builder.getVocabSize() === 0) {
-      this.rebuildVocabulary();
-      if (this.builder.getVocabSize() === 0) return [];
+  async search(query: string, limit = 5, typeFilter?: string): Promise<SearchResult[]> {
+    let queryVec: number[];
+
+    if (this.embedFn) {
+      // OpenAI path: embed the query
+      queryVec = await this.embedFn(query);
+    } else {
+      // TF-IDF path: vectorize with current vocabulary
+      if (this.builder.getVocabSize() === 0) {
+        this.rebuildVocabulary();
+        if (this.builder.getVocabSize() === 0) return [];
+      }
+      queryVec = this.builder.vectorize(query);
     }
 
-    const queryVec = this.builder.vectorize(query);
-
-    const filter = typeFilter ? " WHERE type = ?" : "";
     const rows = typeFilter
-      ? this.db.prepare(`SELECT id, type, title, vector, metadata FROM vector_cache${filter}`).all(typeFilter)
+      ? this.db.prepare("SELECT id, type, title, vector, metadata FROM vector_cache WHERE type = ?").all(typeFilter)
       : this.db.prepare("SELECT id, type, title, vector, metadata FROM vector_cache").all();
 
     const scored: SearchResult[] = [];
@@ -210,10 +231,11 @@ export class VectorCache {
         continue;
       }
 
-      // Vectors might be different lengths if vocabulary changed
+      // Handle dimension mismatch (e.g. mode switch, or stale TF-IDF vectors)
       const minLen = Math.min(queryVec.length, storedVec.length);
-      const a = queryVec.slice(0, minLen);
-      const b = storedVec.slice(0, minLen);
+      if (minLen === 0) continue;
+      const a = queryVec.length === minLen ? queryVec : queryVec.slice(0, minLen);
+      const b = storedVec.length === minLen ? storedVec : storedVec.slice(0, minLen);
       const score = cosineSimilarity(a, b);
 
       if (score > 0.01) {
@@ -223,17 +245,15 @@ export class VectorCache {
         } catch {
           metadata = {};
         }
-
         scored.push({ id: row.id, type: row.type, title: row.title, score, metadata });
       }
     }
 
-    // Sort by score descending
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, limit);
   }
 
-  // ── Rebuild vocabulary ─────────────────────────────────────────────────────
+  // ── Rebuild vocabulary (TF-IDF only) ──────────────────────────────────────
 
   private rebuildVocabulary(): void {
     const rows = this.db.prepare("SELECT id, type, content FROM vector_cache").all() as {
@@ -242,10 +262,8 @@ export class VectorCache {
 
     if (rows.length === 0) return;
 
-    // Rebuild vocabulary from all documents
     this.builder.buildVocabulary(rows.map((r) => r.content));
 
-    // Re-vectorize all stored entries with new vocabulary
     const update = this.db.prepare("UPDATE vector_cache SET vector = ? WHERE id = ? AND type = ?");
     const batch = this.db.transaction(() => {
       for (const row of rows) {
@@ -258,12 +276,22 @@ export class VectorCache {
 
   // ── Stats ──────────────────────────────────────────────────────────────────
 
-  stats(): { totalEntries: number; byType: Record<string, number>; vocabSize: number } {
+  stats(): {
+    totalEntries: number;
+    byType: Record<string, number>;
+    vocabSize: number;
+    embeddingMode: "openai" | "tfidf";
+  } {
     const total = (this.db.prepare("SELECT COUNT(*) as n FROM vector_cache").get() as any).n as number;
     const types = this.db.prepare("SELECT type, COUNT(*) as n FROM vector_cache GROUP BY type").all() as { type: string; n: number }[];
     const byType: Record<string, number> = {};
     for (const t of types) byType[t.type] = t.n;
-    return { totalEntries: total, byType, vocabSize: this.builder.getVocabSize() };
+    return {
+      totalEntries: total,
+      byType,
+      vocabSize: this.embedFn ? 0 : this.builder.getVocabSize(),
+      embeddingMode: this.embedFn ? "openai" : "tfidf",
+    };
   }
 
   // ── Clear ──────────────────────────────────────────────────────────────────

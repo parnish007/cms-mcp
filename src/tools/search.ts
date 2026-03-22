@@ -53,7 +53,7 @@ export function registerSearchTools(
         }
 
         const typeFilter = args.type === "all" ? undefined : args.type;
-        const results = vectorCache.search(args.query, args.limit, typeFilter);
+        const results = await vectorCache.search(args.query, args.limit, typeFilter);
 
         if (results.length === 0) {
           return {
@@ -132,7 +132,7 @@ export function registerSearchTools(
             for (const item of items as any[]) {
               const id = String(item.id ?? item._id ?? "");
               if (!id) continue;
-              vectorCache.store(
+              await vectorCache.store(
                 id,
                 "project",
                 String(item.title ?? ""),
@@ -159,7 +159,7 @@ export function registerSearchTools(
             for (const item of items as any[]) {
               const id = String(item.id ?? item._id ?? "");
               if (!id) continue;
-              vectorCache.store(
+              await vectorCache.store(
                 id,
                 "blog",
                 String(item.title ?? ""),

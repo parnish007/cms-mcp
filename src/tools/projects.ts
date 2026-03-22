@@ -8,6 +8,7 @@ import { ApiClient } from "../lib/api-client.js";
 import { AuditLogger, withAudit } from "../lib/audit.js";
 import { buildCreatePreview, buildUpdatePreview } from "../lib/diff.js";
 import { runWithTransaction, deleteRollback } from "../lib/transaction.js";
+import { type ApprovalGate, checkGate } from "../lib/approval-gate.js";
 
 // ─── Shared Schemas ───────────────────────────────────────────────────────────
 
@@ -37,6 +38,7 @@ export function registerProjectTools(
   server: McpServer,
   config: Config,
   audit: AuditLogger,
+  gate?: ApprovalGate | null,
 ): void {
   const endpoint = config.endpoints.projects;
 
@@ -152,6 +154,10 @@ export function registerProjectTools(
           };
         }
 
+        const preview = buildCreatePreview(parsed.data as Record<string, unknown>);
+        const blocked = await checkGate(gate, "create_project", args as Record<string, unknown>, preview, config.approvals?.tools);
+        if (blocked) return blocked;
+
         const created = await runWithTransaction(async (tx) => {
           const result = await client.post<Record<string, unknown>>(endpoint, parsed.data);
           const id = String(result["id"] ?? result["_id"] ?? "");
@@ -214,6 +220,9 @@ export function registerProjectTools(
         }
 
         const current = await client.get<Record<string, unknown>>(`${endpoint}/${id}`);
+        const preview = buildUpdatePreview(current, updates as Record<string, unknown>);
+        const blocked = await checkGate(gate, "update_project", args as Record<string, unknown>, preview, config.approvals?.tools);
+        if (blocked) return blocked;
 
         await runWithTransaction(async (tx) => {
           tx.addStep(`Update project ${id}`, async () => {
@@ -245,6 +254,10 @@ export function registerProjectTools(
       if (config.readOnly) return readOnlyBlock("publish_project");
 
       return withAudit(audit, "publish_project", args, async () => {
+        const preview = `Publish project ${args.id} — set status → "published"`;
+        const blocked = await checkGate(gate, "publish_project", args as Record<string, unknown>, preview, config.approvals?.tools);
+        if (blocked) return blocked;
+
         await client.patch(`${endpoint}/${args.id}`, { status: "published" });
         return {
           content: [{
@@ -268,6 +281,10 @@ export function registerProjectTools(
       if (config.readOnly) return readOnlyBlock("delete_project");
 
       return withAudit(audit, "delete_project", args, async () => {
+        const preview = `⚠️ DELETE project ${args.id} — this is irreversible`;
+        const blocked = await checkGate(gate, "delete_project", args as Record<string, unknown>, preview, config.approvals?.tools);
+        if (blocked) return blocked;
+
         await client.delete(`${endpoint}/${args.id}`);
         return {
           content: [{
