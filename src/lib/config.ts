@@ -28,15 +28,12 @@ const AuthSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-// Endpoint paths — can be relative ("/projects") or full URLs
-const EndpointsSchema = z.object({
-  projects:   z.string().optional(),
-  blogs:      z.string().optional(),
-  media:      z.string().optional(),
-  tags:       z.string().optional(),
-  siteConfig: z.string().optional(),
-  analytics:  z.string().optional(),
-});
+// Endpoint paths — can be relative ("/projects") or full URLs.
+// Accepts ANY string key so cms-mcp works with any CMS resource
+// (e.g. "products", "authors", "custom_posts") without code changes.
+// Reserved key "media" gets dedicated upload tooling; all others
+// get generic CRUD tools auto-generated from live schema introspection.
+const EndpointsSchema = z.record(z.string(), z.string()).default({});
 
 const GitHubSchema = z.object({
   token:        z.string().min(1).describe("GitHub PAT or env:VAR_NAME reference"),

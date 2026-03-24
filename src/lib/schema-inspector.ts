@@ -1,62 +1,18 @@
 // src/lib/schema-inspector.ts
-// Auto-Schema Adapter — introspects a live REST endpoint and generates a schema report.
-// Fetches up to 5 sample records, infers field types and patterns, and returns a
-// markdown table Claude can use to understand the exact data shape of any CMS API.
+// Human-readable schema inspector — fetches up to 5 live records from a REST
+// endpoint and produces a markdown table describing field types.
+//
+// Used by the inspect_endpoint_schema MCP tool to show Claude (and the admin)
+// what fields a CMS endpoint actually has. For the machine-readable version
+// used by the generic tool factory, see schema-introspector.ts.
+//
+// Type inference logic lives in type-inference.ts so both this file and
+// schema-introspector.ts share the same regex/algorithm without duplication.
 
 import type { ApiClient } from "./api-client.js";
+import { inferType, normalizeList } from "./type-inference.js";
 
-// ─── Type inference ───────────────────────────────────────────────────────────
-
-const UUID_RE    = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}/;
-const URL_RE     = /^https?:\/\//i;
-const SLUG_RE    = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const EMAIL_RE   = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-function inferType(values: unknown[]): string {
-  const nonNull = values.filter((v) => v !== null && v !== undefined);
-  if (nonNull.length === 0) return "null";
-
-  const types = new Set(nonNull.map((v) => typeof v));
-
-  if (types.size === 1) {
-    const t = [...types][0];
-
-    if (t === "boolean") return "boolean";
-    if (t === "number")  return "number";
-    if (t === "object") {
-      if (nonNull.every(Array.isArray)) return "array";
-      return "object";
-    }
-
-    if (t === "string") {
-      const strings = nonNull as string[];
-
-      // Detect closed enum (≤8 distinct values, all values are a known set)
-      const distinct = new Set(strings);
-      if (distinct.size <= 8 && strings.length >= 2) {
-        return `enum(${[...distinct].join("|")})`;
-      }
-
-      // Pattern detection (priority order)
-      if (strings.every((s) => UUID_RE.test(s)))     return "uuid";
-      if (strings.every((s) => ISO_DATE_RE.test(s))) return "date";
-      if (strings.every((s) => URL_RE.test(s)))      return "url";
-      if (strings.every((s) => EMAIL_RE.test(s)))    return "email";
-      if (strings.every((s) => SLUG_RE.test(s) && s.length < 80)) return "slug";
-
-      return "string";
-    }
-  }
-
-  // Mixed types — check if consistently nullable
-  if (types.has("object") && nonNull.length < values.length) {
-    const innerType = inferType(nonNull);
-    return `${innerType}?`; // nullable
-  }
-
-  return "mixed";
-}
+// ─── Format example value ─────────────────────────────────────────────────────
 
 function formatExample(value: unknown): string {
   if (value === null || value === undefined) return "null";
@@ -68,26 +24,12 @@ function formatExample(value: unknown): string {
   return s.length > 45 ? s.slice(0, 42) + "..." : s;
 }
 
-// ─── List normalizer ──────────────────────────────────────────────────────────
-
-function normalizeList(data: unknown): unknown[] {
-  if (Array.isArray(data)) return data;
-  if (data && typeof data === "object") {
-    for (const key of ["items", "data", "results", "records", "entries", "nodes", "collection", "content", "list"]) {
-      const v = (data as any)[key];
-      if (Array.isArray(v)) return v;
-    }
-    // If it's a single object, wrap it (single-record response)
-    return [data];
-  }
-  return [];
-}
-
-// ─── Main export ─────────────────────────────────────────────────────────────
+// ─── Main export ──────────────────────────────────────────────────────────────
 
 /**
  * Fetches up to 5 records from a REST endpoint and generates a schema report.
- * Returns a markdown string with a field-type table and schema notes.
+ * Returns a markdown string with a field-type table and schema notes,
+ * suitable for display to Claude via the inspect_endpoint_schema tool.
  */
 export async function inspectEndpoint(
   client: ApiClient,
@@ -118,6 +60,9 @@ export async function inspectEndpoint(
       ``,
       `This tool needs at least one record to infer the schema.`,
       `Create a record first, then run \`inspect_endpoint_schema\` again.`,
+      ``,
+      `Once the schema is refreshed, run \`refresh_resource_schema\` and restart cms-mcp`,
+      `to apply updated field types to the generated tools.`,
     ].join("\n");
   }
 
@@ -131,7 +76,7 @@ export async function inspectEndpoint(
     }
   }
 
-  // For each field, collect values across all sample records
+  // For each field, collect values and infer type
   const fields: Array<{
     name: string;
     type: string;
@@ -143,13 +88,16 @@ export async function inspectEndpoint(
   for (const key of allKeys) {
     const values = items.map((item: any) => item?.[key]);
     const nullCount = values.filter((v) => v === null || v === undefined).length;
-    const nullable = nullCount > 0;
-    const alwaysPresent = nullCount === 0;
     const type = inferType(values);
     const firstNonNull = values.find((v) => v !== null && v !== undefined);
-    const example = formatExample(firstNonNull ?? null);
 
-    fields.push({ name: key, type, nullable, alwaysPresent, example });
+    fields.push({
+      name:          key,
+      type,
+      nullable:      nullCount > 0,
+      alwaysPresent: nullCount === 0,
+      example:       formatExample(firstNonNull ?? null),
+    });
   }
 
   // Sort: ID-like fields first, then common fields, then alphabetical
@@ -172,7 +120,7 @@ export async function inspectEndpoint(
     `| Field | Type | Required | Example |`,
     `|-------|------|----------|---------|`,
     ...fields.map((f) => {
-      const req = f.alwaysPresent ? "✓" : "—";
+      const req  = f.alwaysPresent ? "✓" : "—";
       const type = f.nullable && !f.type.endsWith("?") ? `${f.type}?` : f.type;
       return `| \`${f.name}\` | ${type} | ${req} | ${f.example} |`;
     }),
@@ -181,7 +129,7 @@ export async function inspectEndpoint(
     ``,
   ];
 
-  // Identify likely key fields
+  // Key field callouts
   const idField = fields.find((f) => f.name === "id" || f.name === "_id");
   if (idField) lines.push(`- **ID field:** \`${idField.name}\` (${idField.type})`);
 
@@ -199,7 +147,7 @@ export async function inspectEndpoint(
   lines.push(
     ``,
     `> This schema was inferred from ${items.length} live record${items.length === 1 ? "" : "s"}.`,
-    `> Use these field names when creating or updating records.`,
+    `> Use \`refresh_resource_schema\` + restart to apply changes to tool shapes.`,
   );
 
   return lines.join("\n");

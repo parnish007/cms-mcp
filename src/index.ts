@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 // src/index.ts
-// cms-mcp v0.3.0 entry point.
+// cms-mcp v0.4.0 entry point.
 // Wires all tools, resources, circuit breaker, vector cache, schema cache,
 // OpenAPI discovery, webhook server, approval gate, and stdio transport.
+//
+// v0.4.0: Generic tool factory replaces hardcoded projects/blogs tools.
+// All configured endpoints now get CRUD tools auto-generated from live
+// schema introspection — any CMS field structure supported out of the box.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -19,8 +23,7 @@ import { ApprovalGate } from "./lib/approval-gate.js";
 import { discoverOpenApi } from "./lib/openapi.js";
 import { startWebhookServer } from "./lib/webhook.js";
 import { registerResources } from "./lib/resources.js";
-import { registerProjectTools } from "./tools/projects.js";
-import { registerBlogTools } from "./tools/blogs.js";
+import { introspectAndRegisterAll } from "./lib/startup-introspect.js";
 import { registerMediaTools } from "./tools/media.js";
 import { registerGitHubTools } from "./tools/github.js";
 import { registerIntrospectTools } from "./tools/introspect.js";
@@ -109,18 +112,23 @@ async function main() {
   // ── MCP Server ─────────────────────────────────────────────────────────────
   const server = new McpServer({
     name: "cms-mcp",
-    version: "0.3.0",
-    description: "Universal agentic CMS server — manage blogs, projects, and media through Claude. " +
-                 "Supports semantic search, OpenAPI discovery, policy enforcement, GitHub sync, " +
-                 "and human-in-the-loop approval gates.",
+    version: "0.4.0",
+    description:
+      "Universal agentic CMS server — manage any REST resource through Claude. " +
+      "Tools are auto-generated at startup from live schema introspection, so any " +
+      "CMS field structure is supported out of the box. Supports semantic search, " +
+      "OpenAPI discovery, policy enforcement, GitHub sync, and human-in-the-loop approval gates.",
   });
 
   // ── Register MCP Resources ─────────────────────────────────────────────────
   registerResources(server, config, vectorCache);
 
-  // ── Register Tools ─────────────────────────────────────────────────────────
-  registerProjectTools(server, config, audit, gate);
-  registerBlogTools(server, config, audit, gate);
+  // ── Generic resource tools (schema-driven, one per configured endpoint) ────
+  // Introspects each endpoint, builds Zod shapes from live field types,
+  // and registers list/get/create/update/delete tools — all before transport connects.
+  const introspectSummary = await introspectAndRegisterAll(server, config, audit, gate, schemaCache);
+
+  // ── Special-purpose tools (media, GitHub, search, introspection meta) ──────
   registerMediaTools(server, config, audit);
   registerGitHubTools(server, config, audit);
   registerIntrospectTools(server, config, audit, schemaCache);
@@ -129,21 +137,35 @@ async function main() {
   // ── Startup Banner ─────────────────────────────────────────────────────────
   const mode = config.readOnly ? " [READ-ONLY]" : "";
   const features: string[] = [];
-  if (schemaCache)          features.push("schema-cache");
+  if (schemaCache)            features.push("schema-cache");
   if (vectorCache && embedFn) features.push("openai-embeddings");
-  else if (vectorCache)     features.push("vector-search");
-  if (config.policies)      features.push("policies");
-  if (gate)                 features.push("approval-gate");
-  if (config.webhook)       features.push("webhook-ready");
+  else if (vectorCache)       features.push("vector-search");
+  if (config.policies)        features.push("policies");
+  if (gate)                   features.push("approval-gate");
+  if (config.webhook)         features.push("webhook-ready");
 
   process.stderr.write(`\n`);
-  process.stderr.write(`  ┌─────────────────────────────────┐\n`);
-  process.stderr.write(`  │  cms-mcp v0.3.0${mode.padEnd(17)}│\n`);
-  process.stderr.write(`  └─────────────────────────────────┘\n`);
+  process.stderr.write(`  ┌──────────────────────────────────────┐\n`);
+  process.stderr.write(`  │  cms-mcp v0.4.0${mode.padEnd(21)}│\n`);
+  process.stderr.write(`  └──────────────────────────────────────┘\n`);
   process.stderr.write(`  Base URL:  ${config.baseUrl}\n`);
-  if (features.length > 0)  process.stderr.write(`  Features:  ${features.join(", ")}\n`);
-  if (gate)                 process.stderr.write(`  Approvals: http://127.0.0.1:${config.approvals?.port ?? 2323}\n`);
-  if (config.auditLog)      process.stderr.write(`  Audit log: ${config.auditLog}\n`);
+  if (features.length > 0)
+    process.stderr.write(`  Features:  ${features.join(", ")}\n`);
+  if (gate)
+    process.stderr.write(`  Approvals: http://127.0.0.1:${config.approvals?.port ?? 2323}\n`);
+  if (config.auditLog)
+    process.stderr.write(`  Audit log: ${config.auditLog}\n`);
+
+  // Resource summary
+  if (introspectSummary.registered.length > 0)
+    process.stderr.write(`  Resources: ${introspectSummary.registered.join(", ")} (schema-driven)\n`);
+  if (introspectSummary.coldStart.length > 0)
+    process.stderr.write(`  Cold-start: ${introspectSummary.coldStart.join(", ")} (no records yet — passthrough mode)\n`);
+  if (introspectSummary.failed.length > 0)
+    process.stderr.write(`  Failed:    ${introspectSummary.failed.join(", ")} (tools not registered)\n`);
+  if (introspectSummary.skipped.length > 0)
+    process.stderr.write(`  Skipped:   ${introspectSummary.skipped.join(", ")} (reserved or no URL)\n`);
+
   process.stderr.write(`\n`);
 
   // ── OpenAPI Auto-Discovery ─────────────────────────────────────────────────
@@ -156,7 +178,7 @@ async function main() {
         if (result) {
           process.stderr.write(
             `  [discovery] Found: ${result.title} (${result.rawPathCount} paths)\n` +
-            `  [discovery] Resources: ${result.resources.map((r) => r.name).join(", ") || "none detected"}\n\n`
+            `  [discovery] Resources: ${result.resources.map((r) => r.name).join(", ") || "none detected"}\n\n`,
           );
           schemaCache?.set(cacheKey, result);
         }
@@ -189,7 +211,7 @@ async function main() {
     process.exit(0);
   }
 
-  process.on("SIGINT", shutdown);
+  process.on("SIGINT",  shutdown);
   process.on("SIGTERM", shutdown);
 
   await server.connect(transport);

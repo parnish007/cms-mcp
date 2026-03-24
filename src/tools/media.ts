@@ -64,11 +64,11 @@ export function registerMediaTools(
     },
     async (args) => {
       return withAudit(audit, "list_media", args, async () => {
-        if (!config.endpoints.media) {
+        if (!config.endpoints["media"]) {
           return { content: [{ type: "text" as const, text: "No media endpoint configured." }] };
         }
 
-        const data = await client.get<unknown>(config.endpoints.media, {
+        const data = await client.get<unknown>(config.endpoints["media"], {
           limit: args.limit,
           search: args.search,
         });
@@ -102,10 +102,10 @@ export function registerMediaTools(
       }
 
       return withAudit(audit, "delete_media", args, async () => {
-        if (!config.endpoints.media) {
+        if (!config.endpoints["media"]) {
           return { content: [{ type: "text" as const, text: "No media endpoint configured." }] };
         }
-        await client.delete(`${config.endpoints.media}/${args.id}`);
+        await client.delete(`${config.endpoints["media"]}/${args.id}`);
         return { content: [{ type: "text" as const, text: `🗑️ Media ${args.id} deleted.` }] };
       });
     },

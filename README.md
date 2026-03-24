@@ -13,6 +13,8 @@
 
 Write blog posts, manage projects, upload media, search content semantically, enforce publishing policies, and require human approval before anything goes live — all through natural language with Claude.
 
+**v0.4.0: Tools are now auto-generated from your live CMS schema — any field structure, any endpoint name, zero code changes.**
+
 </div>
 
 ---
@@ -26,9 +28,11 @@ Claude: Published. ✅
 You: "Have I written about LSTMs before? If so, link to that post in this new article."
 Claude: Yes — found "Deep Learning Fundamentals" (87% match). Linking now.
 
-You: "Inspect the schema of my blogs endpoint"
-Claude: Found 14 fields — title (string), body (string), status (enum: draft|published),
-        slug (slug), cover_image (url?), tags (array), published_at (date?)...
+You: "List my draft products"
+Claude: Found 8 products: [id] Widget Pro (draft), [id] Gadget X (draft)...
+
+You: "Create a new author named Jane Doe with email jane@example.com"
+Claude: ✅ Author created! ID: a1b2c3, name: Jane Doe
 ```
 
 Works with **any REST API** — Supabase, PocketBase, Payload CMS, Directus, Strapi, custom Next.js/Express/FastAPI routes, or any backend that speaks JSON over HTTP.
@@ -37,18 +41,34 @@ Works with **any REST API** — Supabase, PocketBase, Payload CMS, Directus, Str
 
 ## Table of Contents
 
+- [How It Works](#how-it-works)
 - [Features](#features)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
+- [Generic Tool System](#generic-tool-system)
 - [Tools Reference](#tools-reference)
 - [Advanced Features](#advanced-features)
-- [Adapting to Your CMS](#adapting-to-your-cms)
-- [Adding Custom Tools](#adding-custom-tools)
 - [Security](#security)
 - [Testing](#testing)
 - [Docker](#docker)
+- [Migration from v0.3.x](#migration-from-v03x)
 - [Contributing](#contributing)
+
+---
+
+## How It Works
+
+At startup, cms-mcp:
+
+1. Reads `config.endpoints` — any key, any URL (e.g. `"products": "/api/products"`)
+2. Fetches up to 5 live records from each endpoint
+3. Infers field types (uuid, date, url, email, slug, enum, string, number, boolean, array, object)
+4. Builds Zod validators from those inferred types
+5. Registers 7 MCP tools per endpoint (`list_X`, `get_X`, `preview_create_X`, `create_X`, `preview_update_X`, `update_X`, `delete_X`)
+6. Caches schemas in SQLite so restarts are instant
+
+Claude receives tool descriptions that exactly match your CMS's real field names and types — not a hardcoded subset. If your CMS has `headline` instead of `title`, or `category_id` alongside `title`, all those fields are included automatically.
 
 ---
 
@@ -56,20 +76,23 @@ Works with **any REST API** — Supabase, PocketBase, Payload CMS, Directus, Str
 
 | Feature | What it does |
 |---------|-------------|
-| **32 MCP tools** | Projects, blogs, media, GitHub, semantic search, API introspection, schema inspection |
+| **🆕 Generic schema-driven tools** | 7 tools auto-generated per endpoint from live field introspection |
+| **🆕 Any endpoint key** | `"products"`, `"authors"`, `"events"` — not limited to blogs/projects |
+| **🆕 Cold-start mode** | Passthrough tools registered even for empty endpoints |
+| **🆕 Schema refresh** | `refresh_resource_schema` updates cache without full restart |
 | **MCP Resources** | `cms://projects/{id}`, `cms://blogs/{id}` — Claude reads content directly |
-| **Zod validation firewall** | Every tool input validated before any network call |
+| **Zod validation firewall** | Runtime Zod shapes built from inferred types — every input validated |
 | **Atomic transactions + rollback** | Failed writes auto-revert — no half-created records |
 | **Diff preview before writes** | Field-level change table before anything hits your API |
 | **Policy engine** | 10 rule types enforce publishing standards across teams |
-| **🆕 Human approval gate** | Local dashboard — Claude pauses, you click Approve/Reject |
-| **🆕 OpenAI semantic search** | Real embeddings (text-embedding-3-small) or local TF-IDF |
-| **🆕 Auto-schema inspector** | Fetches live records and infers your CMS field types |
+| **Human approval gate** | Local dashboard — Claude pauses, you click Approve/Reject |
+| **OpenAI semantic search** | Real embeddings (text-embedding-3-small) or local TF-IDF |
+| **Auto-schema inspector** | `inspect_endpoint_schema` fetches live records, shows field types |
 | **OpenAPI auto-discovery** | Scans your API for a Swagger/OpenAPI spec on startup |
 | **Circuit breaker** | Serves cached responses when your CMS API goes down |
 | **Content distillation** | HTML→Markdown, junk field stripping, metadata headers |
 | **GitHub webhook mode** | Auto-creates draft entries when you push to a repo |
-| **Schema cache** | SQLite-backed OpenAPI spec cache with TTL invalidation |
+| **Schema cache** | SQLite-backed schema cache with TTL invalidation |
 | **Audit logging** | Every tool call logged — tool, args, outcome, duration |
 | **Read-only mode** | Disable all writes for exploratory sessions |
 | **SSRF + security hardening** | Private IPs blocked, no redirect following, 30s timeouts |
@@ -116,12 +139,16 @@ docker compose up
     "token": "env:CMS_API_TOKEN"
   },
   "endpoints": {
+    "posts":    "/posts",
     "projects": "/projects",
-    "blogs":    "/posts",
+    "products": "/products",
+    "authors":  "/authors",
     "media":    "/uploads"
   }
 }
 ```
+
+Any key works. At startup, cms-mcp generates `list_posts`, `create_posts`, `list_products`, `create_products`, etc. — with schemas matching whatever fields your API actually has.
 
 **2. Set environment variables:**
 ```bash
@@ -148,11 +175,11 @@ claude mcp add cms-mcp -- npx cms-mcp --config ./cms-mcp.config.json
 
 **4. Talk to Claude:**
 ```
-"List my draft blog posts"
-"Inspect the schema of my projects endpoint"
-"Create a project called Dashboard — show diff first"
-"Search my content for anything about machine learning"
-"Check if post 42 passes publishing policies"
+"List my draft posts"
+"Create a product called Widget Pro with price 29.99"
+"Inspect the schema of my authors endpoint"
+"Show me what endpoints are configured"
+"Refresh the schema for products and tell me what changed"
 ```
 
 ---
@@ -172,8 +199,11 @@ claude mcp add cms-mcp -- npx cms-mcp --config ./cms-mcp.config.json
   },
 
   "endpoints": {
+    "posts":    "/posts",
     "projects": "/projects",
-    "blogs":    "/posts",
+    "products": "/products",
+    "authors":  "/authors",
+    "events":   "/events",
     "media":    "/uploads"
   },
 
@@ -200,7 +230,7 @@ claude mcp add cms-mcp -- npx cms-mcp --config ./cms-mcp.config.json
   "approvals": {
     "port":      2323,
     "timeoutMs": 300000,
-    "tools":     ["publish_project", "publish_blog", "delete_project", "delete_blog"]
+    "tools":     ["publish_posts", "delete_posts", "delete_products"]
   },
 
   "openapi": {
@@ -239,26 +269,93 @@ Any string prefixed with `env:` is resolved from the environment at startup. Sec
 
 ---
 
+## Generic Tool System
+
+### How schema introspection works
+
+For each key in `config.endpoints` (except `media`), cms-mcp:
+
+1. **Checks the SQLite schema cache** — if a fresh entry exists, uses it (no API call)
+2. **Fetches up to 5 live records** — `GET /endpoint?limit=5`
+3. **Infers field types** from the actual values:
+
+| Inferred type | What it means | Zod validator |
+|---|---|---|
+| `uuid` | UUID-format string | `z.string().uuid()` |
+| `date` | ISO 8601 date string | `z.string().datetime()` |
+| `url` | HTTP/HTTPS URL | `z.string().url()` |
+| `email` | Email address | `z.string().email()` |
+| `slug` | URL-safe lowercase slug | `z.string().regex(...)` |
+| `enum(a\|b\|c)` | Closed set of string values | `z.enum(["a","b","c"])` |
+| `string` | Generic string | `z.string()` |
+| `number` | Numeric value | `z.number()` |
+| `boolean` | True/false | `z.boolean()` |
+| `array` | Array of any values | `z.array(z.unknown())` |
+| `object` | Nested object | `z.record(z.unknown())` |
+| Any `*?` | Nullable variant | base type + `.optional()` |
+
+4. **Builds Zod shapes** — `create` mode excludes system fields (`id`, `created_at`, etc.), `update` mode makes all fields optional + requires `id`
+5. **Registers 7 tools** per resource (see below)
+6. **Caches the schema** in SQLite (TTL from `schemaCache.ttlMinutes`, default 60m)
+
+### Tools generated per endpoint
+
+For an endpoint key `X`, these tools are registered:
+
+| Tool | Description |
+|------|-------------|
+| `list_X` | List records. Params: `limit`, `search`, plus any enum-typed fields as filters |
+| `get_X` | Fetch a single record by ID |
+| `preview_create_X` | Show a diff table of what will be created — no API call |
+| `create_X` | Create a record. Requires `confirm: true`. All writable fields available |
+| `preview_update_X` | Show a diff table of what will change — fetches current record |
+| `update_X` | Update a record. Requires `id` + `confirm: true` |
+| `delete_X` | Delete a record. Requires `id` + `confirm: true`. Gated by approval if configured |
+
+### Cold-start mode
+
+If an endpoint returns zero records at introspection time (brand-new CMS), tools are still registered in **passthrough mode**:
+
+- `create_X` accepts `fields: Record<string, unknown>` — pass any key-value pairs
+- `update_X` accepts `id` + `fields: Record<string, unknown>`
+- Tools display a notice explaining that field hints aren't available yet
+
+**To upgrade from cold-start to full schema:**
+1. Create at least one record in your CMS
+2. Ask Claude: `"Refresh the schema for X"` (calls `refresh_resource_schema`)
+3. Restart cms-mcp — the new tool shapes will be applied
+
+### Schema cache and refresh
+
+```
+Startup: check SQLite → cache hit → use immediately (fast)
+                      → cache miss → introspect live API → cache result
+
+Manual refresh: refresh_resource_schema → invalidate cache → re-introspect → re-cache
+                → restart required for tool shapes to update
+```
+
+Clear all cached schemas: ask Claude `"Clear the schema cache"` (calls `clear_cache`).
+
+---
+
 ## Tools Reference
 
-### Projects (8 tools)
-`list_projects` · `get_project` · `preview_create_project` · `create_project` · `preview_update_project` · `update_project` · `publish_project` · `delete_project`
+### Generic resource tools (per configured endpoint)
 
-**Fields:** `title`, `summary`, `description`, `slug`, `tech_stack`, `live_url`, `repo_url`, `cover_image`, `tags`, `status`, `is_featured`, `seo_title`, `seo_description`
-
-### Blogs (9 tools)
-`list_blogs` · `get_blog` · `preview_create_blog` · `create_blog` · `preview_update_blog` · `update_blog` · `publish_blog` · `unpublish_blog` · `delete_blog`
-
-**Fields:** `title`, `body`, `excerpt`, `slug`, `cover_image`, `tags`, `status`, `published_at`, `reading_time`, `seo_title`, `seo_description`
+See [Generic Tool System](#generic-tool-system) above. For endpoint key `posts`:
+`list_posts` · `get_posts` · `preview_create_posts` · `create_posts` · `preview_update_posts` · `update_posts` · `delete_posts`
 
 ### Media (3 tools)
 `upload_media_from_url` · `list_media` · `delete_media`
 
+The `media` endpoint key is reserved for these dedicated tools (multipart upload, SSRF-hardened proxy).
+
 ### GitHub (3 tools)
 `scan_repo` · `sync_repo_to_project` · `list_repos`
 
-### Introspection (7 tools)
-`discover_api` · `apply_discovered_endpoints` · `check_policies` · `init_policies` · `cache_stats` · `clear_cache` · **`inspect_endpoint_schema`**
+### Introspection (9 tools)
+`discover_api` · `apply_discovered_endpoints` · `inspect_endpoint_schema` · `refresh_resource_schema` · `list_configured_endpoints` · `check_policies` · `init_policies` · `cache_stats` · `clear_cache`
 
 ### Search (3 tools)
 `semantic_search` · `sync_all_content` · `knowledge_status`
@@ -275,9 +372,9 @@ cms://blogs/{id}        → Read a single blog post (distilled)
 
 ## Advanced Features
 
-### Human Approval Gate 🆕
+### Human Approval Gate
 
-The killer enterprise feature. When enabled, every write operation pauses and waits for a human to approve in a local browser UI — no code changes required.
+When enabled, every write operation pauses and waits for a human to approve in a local browser UI.
 
 **Enable:**
 ```bash
@@ -289,23 +386,23 @@ Or in config:
 {
   "approvals": {
     "port": 2323,
-    "tools": ["publish_project", "publish_blog", "delete_project", "delete_blog"]
+    "tools": ["publish_posts", "delete_posts", "delete_products"]
   }
 }
 ```
 
 **Flow:**
-1. Claude calls `publish_project`
+1. Claude calls `delete_posts`
 2. cms-mcp prints: `Approval required — open http://localhost:2323`
 3. Browser shows the diff preview with Approve / Reject buttons
 4. You click Approve → write executes
 5. You click Reject → Claude is told the operation was rejected
 
-The dashboard uses Server-Sent Events for real-time updates. Multiple pending approvals stack as cards. Auto-rejects after 5 minutes (configurable with `timeoutMs`).
+Auto-rejects after 5 minutes (configurable with `timeoutMs`).
 
 See [docs/advanced/approval-gate.md](./docs/advanced/approval-gate.md).
 
-### Semantic Search with Real Embeddings 🆕
+### Semantic Search with Real Embeddings
 
 **Default (TF-IDF, no API key needed):**
 ```json
@@ -324,41 +421,12 @@ See [docs/advanced/approval-gate.md](./docs/advanced/approval-gate.md).
 }
 ```
 
-With OpenAI embeddings, searching for "LSTM" finds posts about "neural networks" and "deep learning" — real semantic understanding, not keyword matching.
-
 ```
 "Have I written about machine learning before? Link to it in this new article."
 → Found: Deep Learning Fundamentals (87% match), Neural Net Tutorial (73% match)
 ```
 
 See [docs/advanced/vector-search.md](./docs/advanced/vector-search.md).
-
-### Auto-Schema Inspector 🆕
-
-Fetches live records from any configured endpoint and infers the schema:
-
-```
-"Inspect the schema of my projects endpoint"
-```
-
-Output:
-```
-## Schema: /api/projects
-
-Sampled 5 records — 12 fields detected
-
-| Field        | Type                    | Required | Example          |
-|--------------|-------------------------|----------|------------------|
-| id           | uuid                    | ✓        | "abc123-..."     |
-| title        | string                  | ✓        | "My Project"     |
-| status       | enum(draft|published)   | ✓        | "draft"          |
-| slug         | slug                    | ✓        | "my-project"     |
-| cover_image  | url?                    | —        | "https://cdn..." |
-| tags         | array                   | —        | ["react", "ts"]  |
-| published_at | date?                   | —        | "2024-01-15T..." |
-```
-
-Now Claude knows exactly what fields exist and what values they accept.
 
 ### Policy Engine
 
@@ -371,18 +439,18 @@ Enforce publishing standards with `cms-mcp.policies.json`:
     {
       "type": "required_fields",
       "fields": ["cover_image", "seo_title", "seo_description"],
-      "tools": ["publish_blog", "publish_project"]
+      "tools": ["publish_posts"]
     },
     {
       "type": "forbidden_words",
       "fields": ["title", "body"],
-      "words": ["TODO", "lorem ipsum", "placeholder"],
-      "tools": ["create_blog", "update_blog", "publish_blog"]
+      "words": ["TODO", "lorem ipsum"],
+      "tools": ["create_posts", "update_posts", "publish_posts"]
     },
     {
       "type": "min_tags",
       "min": 2,
-      "tools": ["publish_project", "publish_blog"]
+      "tools": ["publish_posts"]
     }
   ]
 }
@@ -399,6 +467,7 @@ See [docs/advanced/policy-engine.md](./docs/advanced/policy-engine.md).
 On startup, cms-mcp scans your API for Swagger/OpenAPI specs and suggests endpoint config:
 ```
 "Discover what APIs are available"
+"Apply the discovered endpoints to my config"
 ```
 Disable: `--no-discover`. Override URL: `openapi.discoveryUrl` in config.
 
@@ -418,146 +487,6 @@ CLOSED → (5 failures) → OPEN → (30s) → HALF-OPEN → test → CLOSED
 
 ---
 
-## Adapting to Your CMS
-
-cms-mcp works with **any REST API** out of the box.
-
-### API response shapes
-
-These list response shapes are all normalized automatically:
-
-```json
-[{...}]                  // raw array
-{ "data": [...] }        // data wrapper
-{ "items": [...] }       // items wrapper
-{ "results": [...] }     // results wrapper
-{ "records": [...] }     // records wrapper
-{ "entries": [...] }     // entries (Contentful)
-{ "nodes": [...] }       // nodes (GraphQL-style)
-{ "collection": [...] }  // collection wrapper
-{ "posts": [...] }       // named wrapper
-{ "articles": [...] }    // named wrapper
-{ "projects": [...] }    // named wrapper
-```
-
-### Field names
-
-The tools use standard conventions. Most CMSes match these out of the box:
-
-| Tool field | Common API equivalents |
-|-----------|------------------------|
-| `title` | `title`, `name` |
-| `body` | `body`, `content`, `description` |
-| `slug` | `slug`, `handle`, `url_key` |
-| `status` | `status`, `state` |
-| `tags` | `tags`, `labels`, `categories` |
-| `cover_image` | `cover_image`, `coverImage`, `thumbnail`, `featured_image` |
-
-If your API uses different field names, either map at the API layer or contribute a field adapter.
-
-### Status values
-
-Default status enums: projects use `draft | published | archived`, blogs use `draft | published`. To change them, edit the Zod enum in `src/tools/projects.ts` or `src/tools/blogs.ts`.
-
-### CMSes confirmed working
-
-| CMS | Auth type | Notes |
-|-----|-----------|-------|
-| **Supabase** (PostgREST) | `bearer` or `api-key` | Use `apikey` header for anon key |
-| **PocketBase** | `bearer` | Auth token from `/api/collections/users/auth-with-password` |
-| **Payload CMS** | `bearer` | Token from `/api/users/login` |
-| **Directus** | `bearer` | Static token from user settings |
-| **Strapi** | `bearer` | Token from API Token settings |
-| **Custom Next.js API** | `bearer` or `none` | Your middleware handles auth |
-
-See [`examples/`](./examples/) for ready-made config files.
-
----
-
-## Adding Custom Tools
-
-Every cms-mcp tool follows the same 20-line pattern. Adding a new resource type takes about 5 minutes.
-
-### Example: `list_tags` tool
-
-**1. Add endpoint to config:**
-```json
-{ "endpoints": { "tags": "/tags" } }
-```
-
-**2. Add to `EndpointsSchema` in `src/lib/config.ts`** (already there — just set it in config).
-
-**3. Create `src/tools/tags.ts`:**
-
-```typescript
-import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { Config } from "../lib/config.js";
-import { ApiClient } from "../lib/api-client.js";
-import { AuditLogger, withAudit } from "../lib/audit.js";
-
-export function registerTagTools(server: McpServer, config: Config, audit: AuditLogger): void {
-  const endpoint = config.endpoints.tags;
-  if (!endpoint) return;
-
-  const client = new ApiClient(config);
-
-  server.tool(
-    "list_tags",
-    { limit: z.number().int().min(1).max(100).default(50) },
-    async (args) => {
-      return withAudit(audit, "list_tags", args, async () => {
-        const data = await client.get<unknown>(endpoint, { limit: args.limit });
-        const items = Array.isArray(data) ? data : (data as any).items ?? [];
-        return {
-          content: [{ type: "text" as const, text: `Tags: ${items.map((t: any) => t.name).join(", ")}` }],
-        };
-      });
-    },
-  );
-}
-```
-
-**4. Register in `src/index.ts`:**
-```typescript
-import { registerTagTools } from "./tools/tags.js";
-// Inside main():
-registerTagTools(server, config, audit);
-```
-
-**5. Build:**
-```bash
-npm run build
-```
-
-### Write tool pattern (with approval gate)
-
-```typescript
-server.tool("create_thing", { ...Schema.shape, confirm: z.literal(true) }, async (args) => {
-  if (config.readOnly) return readOnlyBlock("create_thing");
-
-  return withAudit(audit, "create_thing", args, async () => {
-    const parsed = Schema.safeParse(args);
-    if (!parsed.success) return validationError(parsed.error);
-
-    // Show diff preview
-    const preview = buildCreatePreview(parsed.data);
-
-    // Gate check — pauses if approval gate is enabled
-    const blocked = await checkGate(gate, "create_thing", args, preview, config.approvals?.tools);
-    if (blocked) return blocked;
-
-    // Execute
-    const result = await client.post(endpoint, parsed.data);
-    return { content: [{ type: "text", text: `✅ Created: ${result.id}` }] };
-  });
-});
-```
-
-`withAudit` handles timing and error logging. `checkGate` handles human approval if configured. Both are no-ops when not enabled.
-
----
-
 ## Security
 
 | Protection | Detail |
@@ -567,7 +496,7 @@ server.tool("create_thing", { ...Schema.shape, confirm: z.literal(true) }, async
 | **Timeouts** | 30s `AbortController` on every outbound request |
 | **Media cap** | 50 MB upload limit — prevents memory exhaustion |
 | **Secret redaction** | Recursive regex-based redaction of all secret field names in audit logs |
-| **Input validation** | Zod schemas on every tool, GitHub names validated against character allowlists |
+| **Input validation** | Zod shapes built from live schema — every tool input validated at runtime |
 | **Confirm guards** | All destructive operations require `confirm: true` |
 | **Approval gate** | Human-in-the-loop click required before write executes |
 | **Webhook HMAC** | Constant-time SHA-256 signature verification |
@@ -616,16 +545,69 @@ Multi-stage build — compiled JS + production deps only (~80MB image).
 
 ---
 
+## Migration from v0.3.x
+
+### What changed
+
+| v0.3.x | v0.4.0 |
+|--------|--------|
+| `list_projects`, `create_project`, etc. | `list_projects`, `create_projects` — key-based naming |
+| `list_blogs`, `create_blog`, etc. | `list_blogs`, `create_blogs` — key-based naming |
+| Fixed fields (hardcoded Zod schemas) | Dynamic fields (inferred from your live API) |
+| `endpoints.projects` / `endpoints.blogs` only | Any endpoint key supported |
+| Schema inspector output was markdown only | Machine-readable `ResourceSchema` + markdown report |
+
+### Config change
+
+Your existing config still works. The only change is `endpoints` now accepts any key:
+
+```json
+{
+  "endpoints": {
+    "projects": "/projects",
+    "blogs":    "/posts",
+    "media":    "/uploads"
+  }
+}
+```
+
+This generates tools: `list_projects`, `list_blogs`, etc. — same names as before, now schema-driven.
+
+### Tool name change
+
+| Old | New |
+|-----|-----|
+| `create_project` | `create_projects` |
+| `update_project` | `update_projects` |
+| `delete_project` | `delete_projects` |
+| `publish_project` | Use `update_projects` with `status: "published"` |
+| `create_blog` | `create_blogs` |
+| `publish_blog` | Use `update_blogs` with `status: "published"` |
+| `unpublish_blog` | Use `update_blogs` with `status: "draft"` |
+
+If you want the old singular names, set your endpoint key to the singular form:
+```json
+{ "endpoints": { "project": "/projects", "blog": "/posts" } }
+```
+
+This generates `list_project`, `create_project`, etc.
+
+### Approval gate tool names
+
+If you had `"tools": ["publish_project", "delete_blog"]` in your `approvals` config, update them to match the new tool names (`delete_projects`, `delete_blogs`, etc.).
+
+---
+
 ## Documentation
 
 | | |
 |-|-|
 | [Getting Started](./docs/getting-started.md) | Install, configure, first conversation |
 | [Configuration](./docs/configuration.md) | Full config schema reference |
-| [Project Tools](./docs/tools/projects.md) | All 8 project tools with examples |
-| [Blog Tools](./docs/tools/blogs.md) | All 9 blog tools with examples |
+| [Generic Resource Tools](./docs/tools/generic-resource.md) | How schema-driven tools work |
 | [Media Tools](./docs/tools/media.md) | Upload, list, delete |
 | [GitHub Tools](./docs/tools/github.md) | Scan, sync, list repos |
+| [Introspection Tools](./docs/tools/introspection.md) | Schema inspect, refresh, cache |
 | [Approval Gate](./docs/advanced/approval-gate.md) | Human-in-the-loop setup |
 | [OpenAI Embeddings](./docs/advanced/vector-search.md) | Semantic search setup |
 | [Schema Inspector](./docs/advanced/openapi-discovery.md) | Auto-schema detection |
@@ -634,7 +616,40 @@ Multi-stage build — compiled JS + production deps only (~80MB image).
 | [Circuit Breaker](./docs/advanced/circuit-breaker.md) | API failure handling |
 | [Content Distillation](./docs/advanced/content-distillation.md) | HTML→Markdown |
 | [Security Guide](./docs/security.md) | Operator reference |
-| [Roadmap](./docs/roadmap.md) | What's next |
+| [Migration Guide](./docs/migration-v0.4.md) | Upgrading from v0.3.x |
+
+---
+
+## CMSes confirmed working
+
+| CMS | Auth type | Notes |
+|-----|-----------|-------|
+| **Supabase** (PostgREST) | `bearer` or `api-key` | Use `apikey` header for anon key |
+| **PocketBase** | `bearer` | Token from `/api/collections/users/auth-with-password` |
+| **Payload CMS** | `bearer` | Token from `/api/users/login` |
+| **Directus** | `bearer` | Static token from user settings |
+| **Strapi** | `bearer` | Token from API Token settings |
+| **Custom Next.js API** | `bearer` or `none` | Your middleware handles auth |
+
+Any REST JSON API works out of the box. See [`examples/`](./examples/) for ready-made config files.
+
+---
+
+## API response shapes
+
+These list response shapes are all normalized automatically:
+
+```json
+[{...}]                  // raw array
+{ "data": [...] }        // data wrapper
+{ "items": [...] }       // items wrapper
+{ "results": [...] }     // results wrapper
+{ "records": [...] }     // records wrapper
+{ "entries": [...] }     // entries (Contentful)
+{ "nodes": [...] }       // nodes (GraphQL-style)
+{ "collection": [...] }  // collection wrapper
+{ "posts": [...] }       // named wrapper (any key containing an array)
+```
 
 ---
 
@@ -647,7 +662,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the dev workflow.
 **Good first contributions:**
 - Add a CMS config to `examples/` (Directus, Strapi, Payload, etc.)
 - Add `PUT` support alongside `PATCH` for APIs that require it
-- Write tests for an edge case you find
+- Write tests for the generic introspection pipeline
 - Add a new policy rule type
 
 ---

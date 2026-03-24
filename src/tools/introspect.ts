@@ -1,5 +1,6 @@
 // src/tools/introspect.ts
-// Introspection tools — OpenAPI discovery, policy management, cache control.
+// Introspection tools — OpenAPI discovery, policy management, cache control,
+// schema inspection, and on-demand schema refresh.
 // These are the "meta" tools: they help Claude understand the CMS API itself.
 
 import { z } from "zod";
@@ -13,6 +14,7 @@ import type { SchemaCache } from "../lib/schema-cache.js";
 import { openApiCacheKey } from "../lib/schema-cache.js";
 import { ApiClient } from "../lib/api-client.js";
 import { inspectEndpoint } from "../lib/schema-inspector.js";
+import { refreshResourceSchema } from "../lib/startup-introspect.js";
 
 export function registerIntrospectTools(
   server: McpServer,
@@ -37,15 +39,13 @@ export function registerIntrospectTools(
         const baseUrl = args.base_url ?? config.baseUrl;
         const cacheKey = openApiCacheKey(baseUrl);
 
-        // Try cache first
         if (cache && !args.force_refresh) {
           const cached = cache.get(cacheKey);
           if (cached) {
-            const result = cached as any;
             return {
               content: [{
                 type: "text" as const,
-                text: `*(from cache)*\n\n${formatDiscoveryResult(result)}`,
+                text: `*(from cache)*\n\n${formatDiscoveryResult(cached as any)}`,
               }],
             };
           }
@@ -61,25 +61,16 @@ export function registerIntrospectTools(
               text: [
                 `## No OpenAPI Spec Found`,
                 ``,
-                `Tried the following locations:`,
-                `- \`/.well-known/openapi.json\``,
-                `- \`/openapi.json\``,
-                `- \`/openapi.yaml\``,
-                `- \`/swagger.json\``,
-                `- \`/api-docs/json\``,
+                `Tried common locations (openapi.json, swagger.json, api-docs/json, etc.).`,
                 ``,
-                `Your API may not expose an OpenAPI spec. You'll need to configure endpoints manually in \`cms-mcp.config.json\`.`,
-                ``,
+                `Your API may not expose an OpenAPI spec. Configure endpoints manually in \`cms-mcp.config.json\`.`,
                 `If your spec is at a custom URL, set \`openapi.discoveryUrl\` in your config.`,
               ].join("\n"),
             }],
           };
         }
 
-        // Store in cache
-        if (cache) {
-          cache.set(cacheKey, result);
-        }
+        if (cache) cache.set(cacheKey, result);
 
         return {
           content: [{ type: "text" as const, text: formatDiscoveryResult(result) }],
@@ -94,7 +85,7 @@ export function registerIntrospectTools(
     "apply_discovered_endpoints",
     {
       config_path: z.string().describe("Path to the cms-mcp.config.json to update"),
-      confirm: z.literal(true).describe("Must be true to write changes to disk"),
+      confirm:     z.literal(true).describe("Must be true to write changes to disk"),
     },
     async (args) => {
       if (config.readOnly) {
@@ -110,7 +101,7 @@ export function registerIntrospectTools(
           if (discoveryResult && cache) cache.set(cacheKey, discoveryResult);
         }
 
-        if (!discoveryResult || Object.keys(discoveryResult.suggestedEndpointConfig).length === 0) {
+        if (!discoveryResult || Object.keys(discoveryResult.suggestedEndpointConfig ?? {}).length === 0) {
           return {
             content: [{
               type: "text" as const,
@@ -119,7 +110,6 @@ export function registerIntrospectTools(
           };
         }
 
-        // Read and update config file
         if (!existsSync(args.config_path)) {
           return {
             content: [{ type: "text" as const, text: `Config file not found: ${args.config_path}` }],
@@ -154,7 +144,7 @@ export function registerIntrospectTools(
               ``,
               `Added:`,
               ...Object.entries(discoveryResult.suggestedEndpointConfig).map(
-                ([k, v]) => `  • ${k}: ${v}`
+                ([k, v]) => `  • ${k}: ${v}`,
               ),
               ``,
               `Restart cms-mcp to use the updated config.`,
@@ -165,12 +155,190 @@ export function registerIntrospectTools(
     },
   );
 
+  // ── inspect_endpoint_schema ───────────────────────────────────────────────
+  // Now accepts ANY configured endpoint key — not limited to a hardcoded enum.
+
+  server.tool(
+    "inspect_endpoint_schema",
+    {
+      endpoint: z.string()
+        .describe(
+          "Endpoint key from your config to inspect (e.g. \"blogs\", \"projects\", \"products\"). " +
+          "Fetches live records and infers field types, enums, and required/optional status.",
+        ),
+    },
+    async (args) => {
+      return withAudit(audit, "inspect_endpoint_schema", args as Record<string, unknown>, async () => {
+        const endpoints = config.endpoints as Record<string, string | undefined>;
+        const endpointUrl = endpoints[args.endpoint];
+
+        if (!endpointUrl) {
+          const configured = Object.keys(endpoints).join(", ") || "(none)";
+          return {
+            content: [{
+              type: "text" as const,
+              text: [
+                `No \`${args.endpoint}\` endpoint configured.`,
+                ``,
+                `Currently configured endpoints: ${configured}`,
+                ``,
+                `Add it to your cms-mcp.config.json:`,
+                `\`\`\`json`,
+                `"endpoints": { "${args.endpoint}": "/${args.endpoint}" }`,
+                `\`\`\``,
+                ``,
+                `Then restart cms-mcp.`,
+              ].join("\n"),
+            }],
+          };
+        }
+
+        const report = await inspectEndpoint(client, endpointUrl);
+        return {
+          content: [{ type: "text" as const, text: report }],
+        };
+      });
+    },
+  );
+
+  // ── refresh_resource_schema ───────────────────────────────────────────────
+  // Invalidates the cached schema for a resource and re-introspects it.
+  // Useful when records have been added since the cold-start, or when the
+  // CMS schema has changed. Note: registered MCP tool shapes do NOT change
+  // until the server is restarted — this only updates the SQLite cache.
+
+  server.tool(
+    "refresh_resource_schema",
+    {
+      resource_key: z.string()
+        .describe(
+          "The endpoint key to re-introspect (e.g. \"blogs\", \"products\"). " +
+          "Invalidates the cached schema and fetches fresh field types from the live API.",
+        ),
+      confirm: z.literal(true)
+        .describe("Must be true to proceed"),
+    },
+    async (args) => {
+      return withAudit(audit, "refresh_resource_schema", args as Record<string, unknown>, async () => {
+        const endpoints = config.endpoints as Record<string, string | undefined>;
+        const endpointUrl = endpoints[args.resource_key];
+
+        if (!endpointUrl) {
+          const configured = Object.keys(endpoints).join(", ") || "(none)";
+          return {
+            content: [{
+              type: "text" as const,
+              text: [
+                `No \`${args.resource_key}\` endpoint configured.`,
+                `Configured endpoints: ${configured}`,
+              ].join("\n"),
+            }],
+          };
+        }
+
+        const schema = await refreshResourceSchema(
+          client,
+          args.resource_key,
+          endpointUrl,
+          config.baseUrl,
+          cache,
+        );
+
+        if (schema.source === "cold-start") {
+          return {
+            content: [{
+              type: "text" as const,
+              text: [
+                `⚠️ "${args.resource_key}" still has no records — schema remains in cold-start mode.`,
+                ``,
+                `Create at least one record in your CMS, then run \`refresh_resource_schema\` again.`,
+                `Once the cache is warm, restart cms-mcp so tool shapes update.`,
+              ].join("\n"),
+            }],
+          };
+        }
+
+        const fieldSummary = schema.fields
+          .slice(0, 20)
+          .map((f) => `  • \`${f.name}\` — ${f.type}${f.alwaysPresent ? "" : "?"}`)
+          .join("\n");
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: [
+              `✅ Schema refreshed for "${args.resource_key}"`,
+              ``,
+              `Sampled ${schema.recordCount} record(s) — ${schema.fields.length} fields detected:`,
+              fieldSummary,
+              schema.fields.length > 20 ? `  … and ${schema.fields.length - 20} more` : "",
+              ``,
+              `**Restart cms-mcp** to apply the updated schema to tool input shapes.`,
+            ].filter(Boolean).join("\n"),
+          }],
+        };
+      });
+    },
+  );
+
+  // ── list_configured_endpoints ─────────────────────────────────────────────
+  // Quick overview of what endpoints are configured and which have schemas cached.
+
+  server.tool(
+    "list_configured_endpoints",
+    {},
+    async (_args) => {
+      return withAudit(audit, "list_configured_endpoints", {}, async () => {
+        const endpoints = config.endpoints as Record<string, string | undefined>;
+        const keys = Object.keys(endpoints);
+
+        if (keys.length === 0) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "No endpoints configured. Add entries to `endpoints` in cms-mcp.config.json.",
+            }],
+          };
+        }
+
+        const lines = [
+          `## Configured Endpoints`,
+          ``,
+          `| Key | URL | Schema Cached |`,
+          `|-----|-----|--------------|`,
+        ];
+
+        for (const key of keys) {
+          const url = endpoints[key] ?? "(not set)";
+          let cached = "—";
+          if (cache) {
+            const { resourceSchemaCacheKey } = await import("../lib/resource-schema.js");
+            const entry = cache.get(resourceSchemaCacheKey(config.baseUrl, key));
+            cached = entry ? "✓" : "—";
+          }
+          lines.push(`| \`${key}\` | \`${url}\` | ${cached} |`);
+        }
+
+        lines.push(
+          ``,
+          `Tools generated per endpoint (except \`media\`): ` +
+          `\`list_X\`, \`get_X\`, \`preview_create_X\`, \`create_X\`, ` +
+          `\`preview_update_X\`, \`update_X\`, \`delete_X\``,
+        );
+
+        return {
+          content: [{ type: "text" as const, text: lines.join("\n") }],
+        };
+      });
+    },
+  );
+
   // ── check_policies ────────────────────────────────────────────────────────
 
   server.tool(
     "check_policies",
     {
-      tool: z.string().describe("The write tool name to check against (e.g. 'publish_blog')"),
+      tool: z.string().describe("The write tool name to check against (e.g. 'publish_blogs')"),
       data: z.record(z.unknown()).describe("The data payload to validate against policies"),
     },
     async (args) => {
@@ -244,7 +412,7 @@ export function registerIntrospectTools(
   server.tool(
     "cache_stats",
     {},
-    async (args) => {
+    async (_args) => {
       return withAudit(audit, "cache_stats", {}, async () => {
         if (!cache) {
           return {
@@ -281,7 +449,7 @@ export function registerIntrospectTools(
     {
       confirm: z.literal(true).describe("Must be true to clear all cache entries"),
     },
-    async (args) => {
+    async (_args) => {
       return withAudit(audit, "clear_cache", {}, async () => {
         if (!cache) {
           return {
@@ -293,44 +461,13 @@ export function registerIntrospectTools(
         return {
           content: [{
             type: "text" as const,
-            text: `🗑️ Cleared ${cleared} cache entries. Next \`discover_api\` call will re-fetch live.`,
+            text: [
+              `🗑️ Cleared ${cleared} cache entries.`,
+              ``,
+              `Next startup will re-introspect all endpoints.`,
+              `Restart cms-mcp to pick up fresh schemas.`,
+            ].join("\n"),
           }],
-        };
-      });
-    },
-  );
-
-  // ── inspect_endpoint_schema ───────────────────────────────────────────────
-
-  server.tool(
-    "inspect_endpoint_schema",
-    {
-      endpoint: z.enum(["projects", "blogs", "media"])
-        .describe("Which configured endpoint to inspect — fetches live records and infers field types"),
-    },
-    async (args) => {
-      return withAudit(audit, "inspect_endpoint_schema", args as Record<string, unknown>, async () => {
-        const endpointUrl = config.endpoints[args.endpoint as keyof typeof config.endpoints];
-
-        if (!endpointUrl) {
-          return {
-            content: [{
-              type: "text" as const,
-              text: [
-                `No \`${args.endpoint}\` endpoint configured.`,
-                ``,
-                `Add it to your cms-mcp.config.json:`,
-                `\`\`\`json`,
-                `"endpoints": { "${args.endpoint}": "/${args.endpoint}" }`,
-                `\`\`\``,
-              ].join("\n"),
-            }],
-          };
-        }
-
-        const report = await inspectEndpoint(client, endpointUrl);
-        return {
-          content: [{ type: "text" as const, text: report }],
         };
       });
     },
