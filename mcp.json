@@ -1,0 +1,350 @@
+{
+  "name": "cms-mcp",
+  "version": "0.5.0",
+  "description": "Universal MCP server for any REST-based CMS. Auto-generates 3 schema-driven tools per endpoint (list, get, mutate) from OpenAPI spec or live introspection. Optional plugins for human approval gates, policy enforcement, semantic search, and GitHub sync.",
+  "homepage": "https://github.com/parnish007/cms-mcp",
+  "repository": "https://github.com/parnish007/cms-mcp",
+  "license": "MIT",
+  "icon": "https://raw.githubusercontent.com/parnish007/cms-mcp/main/docs/assets/icon.png",
+  "tags": [
+    "cms",
+    "content-management",
+    "rest-api",
+    "openapi",
+    "supabase",
+    "strapi",
+    "directus",
+    "pocketbase",
+    "payload",
+    "semantic-search",
+    "approval-gate",
+    "schema-driven"
+  ],
+  "author": {
+    "name": "parnish007",
+    "url": "https://github.com/parnish007"
+  },
+  "runtime": {
+    "type": "node",
+    "version": ">=18.0.0",
+    "command": "npx cms-mcp --config ./cms-mcp.config.json",
+    "transport": "stdio"
+  },
+  "config": {
+    "schema": {
+      "type": "object",
+      "required": ["baseUrl"],
+      "properties": {
+        "baseUrl": {
+          "type": "string",
+          "description": "Base URL of your REST API (e.g. https://api.example.com/api)"
+        },
+        "auth": {
+          "type": "object",
+          "description": "Authentication config",
+          "properties": {
+            "type": { "type": "string", "enum": ["bearer", "api-key", "basic", "none"] },
+            "token": { "type": "string", "description": "Use env: prefix to read from environment" },
+            "header": { "type": "string", "description": "Custom header name for api-key auth" }
+          }
+        },
+        "endpoints": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Map of endpoint key → path. Each key gets list_X, get_X, mutate_X tools."
+        },
+        "readOnly": {
+          "type": "boolean",
+          "default": false,
+          "description": "Disable all write tools when true"
+        },
+        "openapi": {
+          "type": "object",
+          "properties": {
+            "autoDiscover": { "type": "boolean", "default": true },
+            "discoveryUrl": { "type": "string", "description": "Override URL for OpenAPI spec (JSON or YAML)" }
+          }
+        },
+        "schemaCache": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string", "default": "~/.cms-mcp/schema-cache.db" },
+            "ttlMinutes": { "type": "number", "default": 60 }
+          }
+        },
+        "approvals": {
+          "type": "object",
+          "description": "Human approval gate — requires browser click before writes execute",
+          "properties": {
+            "port": { "type": "number", "default": 2323 },
+            "timeoutMs": { "type": "number", "default": 300000 },
+            "tools": { "type": "array", "items": { "type": "string" }, "description": "Specific tools to gate. Omit to gate all writes." }
+          }
+        },
+        "policies": {
+          "type": "string",
+          "description": "Path to cms-mcp.policies.json — 10 rule types for publishing standards"
+        },
+        "embedding": {
+          "type": "object",
+          "properties": {
+            "provider": { "type": "string", "enum": ["openai"] },
+            "apiKey": { "type": "string" },
+            "model": { "type": "string", "default": "text-embedding-3-small" }
+          }
+        },
+        "github": {
+          "type": "object",
+          "properties": {
+            "token": { "type": "string" },
+            "defaultOwner": { "type": "string" }
+          }
+        },
+        "auditLog": {
+          "type": "string",
+          "description": "Path for NDJSON audit log. Use ~/ for home directory."
+        }
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "list_X",
+      "description": "List records for endpoint X. Supports limit (default 20), full-text search, and enum field filters auto-generated from your schema. Replace X with your endpoint key (e.g. list_posts, list_products).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": { "type": "number", "default": 20, "description": "Max records to return (1–100)" },
+          "search": { "type": "string", "description": "Full-text search query" }
+        }
+      }
+    },
+    {
+      "name": "get_X",
+      "description": "Fetch a single record by ID from endpoint X. Returns the full JSON record.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": { "type": "string", "description": "Record ID or slug" }
+        }
+      }
+    },
+    {
+      "name": "mutate_X",
+      "description": "Create, update, delete, or preview changes to a record in endpoint X. The action param selects the operation: preview (no write), create (POST), update (PATCH), delete (DELETE).",
+      "inputSchema": {
+        "type": "object",
+        "required": ["action"],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["preview", "create", "update", "delete"],
+            "description": "preview = show diff without writing; create/update/delete require confirm: true"
+          },
+          "id": { "type": "string", "description": "Record ID — required for update, delete, and preview-update" },
+          "data": { "type": "object", "description": "Fields to write. Schema-driven — only fields from your API accepted." },
+          "confirm": { "type": "boolean", "enum": [true], "description": "Must be true for create/update/delete" }
+        }
+      }
+    },
+    {
+      "name": "discover_api",
+      "description": "Probe your API for an OpenAPI/Swagger spec. Returns discovered resources, endpoint paths, and a suggested endpoints config block.",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "apply_discovered_endpoints",
+      "description": "Write the discovered endpoint config to cms-mcp.config.json and prompt a restart.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["confirm"],
+        "properties": {
+          "endpoints": { "type": "object" },
+          "confirm": { "type": "boolean", "enum": [true] }
+        }
+      }
+    },
+    {
+      "name": "inspect_endpoint_schema",
+      "description": "Show the full schema for a configured endpoint — field names, types, required/optional status. Sources: OpenAPI spec (authoritative) or live sampling.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["endpoint"],
+        "properties": {
+          "endpoint": { "type": "string", "description": "Configured endpoint key (e.g. posts, products)" }
+        }
+      }
+    },
+    {
+      "name": "refresh_resource_schema",
+      "description": "Invalidate the SQLite cache for one endpoint and re-introspect: cache → OpenAPI → sampling → cold-start. Prompts server restart to apply new tool shapes.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["resource_key", "confirm"],
+        "properties": {
+          "resource_key": { "type": "string" },
+          "confirm": { "type": "boolean", "enum": [true] }
+        }
+      }
+    },
+    {
+      "name": "list_configured_endpoints",
+      "description": "Show a table of all configured endpoints with URL, schema source (cache/OpenAPI/sampled/cold-start), and field count.",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "cache_stats",
+      "description": "Show SQLite schema cache statistics: hit rate, entry count, TTL, size on disk.",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "clear_cache",
+      "description": "Clear the SQLite schema cache for one or all endpoints.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "endpoint": { "type": "string", "description": "Specific endpoint key, or omit to clear all" },
+          "confirm": { "type": "boolean", "enum": [true] }
+        }
+      }
+    },
+    {
+      "name": "upload_media_from_url",
+      "description": "Download a remote image/file and upload it to your CMS media endpoint. SSRF-hardened: blocks private IPs, AWS metadata, IPv6 ULA. 50 MB cap.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+          "url": { "type": "string", "format": "uri" },
+          "altText": { "type": "string" },
+          "folder": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "list_media",
+      "description": "List media files from your CMS media endpoint.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": { "type": "number", "default": 20 }
+        }
+      }
+    },
+    {
+      "name": "semantic_search",
+      "description": "[Plugin: schemaCache required] Search across all synced content using TF-IDF or OpenAI embeddings. Returns top matches with similarity scores.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string" },
+          "type": { "type": "string", "description": "Filter by endpoint key" },
+          "limit": { "type": "number", "default": 5 }
+        }
+      }
+    },
+    {
+      "name": "sync_all_content",
+      "description": "[Plugin: schemaCache required] Fetch all records from every configured endpoint and index them in the vector cache for semantic search.",
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "scan_repo",
+      "description": "[Plugin: github required] Scan a GitHub repository — README, package.json, languages — and extract tech stack, description, and metadata.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["owner", "repo"],
+        "properties": {
+          "owner": { "type": "string" },
+          "repo": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "sync_repo_to_project",
+      "description": "[Plugin: github required] Scan a GitHub repo and create or update a project record in your CMS with the extracted metadata.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["owner", "repo", "confirm"],
+        "properties": {
+          "owner": { "type": "string" },
+          "repo": { "type": "string" },
+          "endpointKey": { "type": "string", "default": "projects" },
+          "confirm": { "type": "boolean", "enum": [true] }
+        }
+      }
+    },
+    {
+      "name": "check_policies",
+      "description": "[Plugin: policies required] Run all configured policy rules against proposed content. Returns violations with field-level detail.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["tool", "data"],
+        "properties": {
+          "tool": { "type": "string" },
+          "data": { "type": "object" }
+        }
+      }
+    },
+    {
+      "name": "init_policies",
+      "description": "[Plugin: policies required] Generate a starter cms-mcp.policies.json for your endpoints with sensible defaults.",
+      "inputSchema": { "type": "object", "properties": {} }
+    }
+  ],
+  "prompts": [
+    {
+      "name": "cms-audit",
+      "description": "Audit all content in a configured endpoint for quality issues — missing SEO fields, draft posts, broken URLs.",
+      "arguments": [
+        { "name": "endpoint", "description": "Endpoint key to audit (e.g. posts)", "required": true }
+      ]
+    },
+    {
+      "name": "cms-publish-workflow",
+      "description": "Run the full publish workflow for a draft record: fetch, review, fill SEO fields, show diff, and publish with approval.",
+      "arguments": [
+        { "name": "endpoint", "description": "Endpoint key (e.g. posts)", "required": true },
+        { "name": "id", "description": "Record ID to publish", "required": true }
+      ]
+    },
+    {
+      "name": "cms-bulk-update",
+      "description": "Apply a field update to all records in an endpoint matching a filter.",
+      "arguments": [
+        { "name": "endpoint", "description": "Endpoint key", "required": true },
+        { "name": "filter", "description": "Filter expression (e.g. status=draft)", "required": true },
+        { "name": "update", "description": "JSON fields to apply", "required": true }
+      ]
+    },
+    {
+      "name": "cms-schema-report",
+      "description": "Generate a full schema report for all configured endpoints — field types, required fields, relation hints.",
+      "arguments": []
+    },
+    {
+      "name": "cms-github-sync",
+      "description": "Scan all public repos for a GitHub user and sync them as project records.",
+      "arguments": [
+        { "name": "githubUser", "description": "GitHub username", "required": true },
+        { "name": "endpointKey", "description": "CMS endpoint to sync into (default: projects)", "required": false }
+      ]
+    }
+  ],
+  "resources": [
+    {
+      "uri": "cms://{endpoint}",
+      "name": "CMS collection",
+      "description": "List all records for a configured endpoint. HTML content is distilled to Markdown.",
+      "mimeType": "text/markdown"
+    },
+    {
+      "uri": "cms://{endpoint}/{id}",
+      "name": "CMS record",
+      "description": "Single record from a configured endpoint, with HTML fields distilled to Markdown.",
+      "mimeType": "text/markdown"
+    }
+  ]
+}

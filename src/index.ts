@@ -26,10 +26,9 @@ import { startWebhookServer } from "./lib/webhook.js";
 import { registerResources } from "./lib/resources.js";
 import { introspectAndRegisterAll } from "./lib/startup-introspect.js";
 import { registerMediaTools } from "./tools/media.js";
-import { registerGitHubTools } from "./tools/github.js";
 import { registerIntrospectTools } from "./tools/introspect.js";
-import { registerSearchTools } from "./tools/search.js";
 import { runInit } from "./cli/init.js";
+import { loadPlugins } from "./plugins/index.js";
 
 // ─── Parse CLI flags ──────────────────────────────────────────────────────────
 
@@ -153,23 +152,16 @@ async function main() {
   registerIntrospectTools(server, config, audit, schemaCache);
 
   // ── Optional plugin tools (registered only when config block present) ───────
-  if (config.github) {
-    registerGitHubTools(server, config, audit);
-  }
-  if (config.schemaCache) {
-    registerSearchTools(server, config, audit, vectorCache, breaker);
-  }
+  const pluginSummary = await loadPlugins(server, config, audit, { vectorCache, breaker });
 
   // ── Startup Banner ─────────────────────────────────────────────────────────
   const mode = config.readOnly ? " [READ-ONLY]" : "";
   const plugins: string[] = [];
-  if (schemaCache)            plugins.push("schema-cache");
-  if (vectorCache && embedFn) plugins.push("openai-embeddings");
-  else if (vectorCache)       plugins.push("tfidf-search");
-  if (config.policies)        plugins.push("policies");
-  if (gate)                   plugins.push("approval-gate");
-  if (config.webhook)         plugins.push("webhook");
-  if (config.github)          plugins.push("github");
+  if (schemaCache)      plugins.push("schema-cache");
+  if (config.policies)  plugins.push("policies");
+  if (gate)             plugins.push("approval-gate");
+  if (config.webhook)   plugins.push("webhook");
+  plugins.push(...pluginSummary.active);
 
   process.stderr.write(`\n`);
   process.stderr.write(`  ┌──────────────────────────────────────┐\n`);
