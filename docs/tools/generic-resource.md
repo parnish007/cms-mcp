@@ -36,13 +36,26 @@ list_products get_products preview_create_products create_products preview_updat
 list_authors  get_authors  preview_create_authors  create_authors  preview_update_authors  update_authors  delete_authors
 ```
 
-## How schemas are built
+## How schemas are built — 4-tier resolution
 
-At startup, for each endpoint:
+At startup, each endpoint resolves its schema through a priority chain:
 
-1. `GET /endpoint?limit=5` — fetch up to 5 live records
-2. Collect all field names across all records
-3. For each field, infer the type from sampled values:
+| Tier | Source | When used |
+|------|--------|-----------|
+| **1 — Cache** | SQLite | Schema was cached from a previous run — instant startup |
+| **2 — OpenAPI** | Spec | `discover_api` has been run and spec is cached — most reliable |
+| **3 — Sampling** | Live API | No spec available — fetches 5 records and infers types |
+| **4 — Cold-start** | Passthrough | No records and no spec — tools registered with `Record<unknown>` |
+
+**OpenAPI schema extraction** (Tier 2):
+- Resolves `$ref`, `allOf`, `oneOf`, `anyOf` recursively
+- Detects `readOnly` fields (excluded from create/update inputs)
+- Detects `nullable` / `type: ["string", "null"]`
+- Derives enums from `enum:` arrays
+- Refines types from `format`: `uuid`, `date-time`, `uri`, `email`
+- Supports OpenAPI 3.x and Swagger 2.x
+
+**Live sampling type inference** (Tier 3):
 
 | Type | Detection criteria |
 |------|-------------------|
@@ -59,12 +72,12 @@ At startup, for each endpoint:
 | `string` | Everything else |
 | `*?` suffix | Field was null/undefined in at least one sample |
 
-4. Build Zod shapes:
-   - **create mode**: exclude `id`, `_id`, `created_at`, `updated_at`; required fields have no `.optional()`
-   - **update mode**: all fields optional + `id` required
-   - **list mode**: `limit` + `search` + any enum-typed fields as optional filters
+**Zod shape modes:**
+- **create mode**: exclude `id`, `_id`, `created_at`, `updated_at`; required fields have no `.optional()`
+- **update mode**: all fields optional + `id` required
+- **list mode**: `limit` + `search` + any enum-typed fields as optional filters
 
-5. Register the 7 tools and cache the schema in SQLite
+After schema resolution, tools are registered and the schema is written to SQLite (Tier 1 for next startup).
 
 ## List tool filtering
 
@@ -96,10 +109,15 @@ The `fields` parameter accepts any key-value object. Once records exist:
 "Refresh the schema for posts"
 → Calls refresh_resource_schema({ resource_key: "posts", confirm: true })
 → Invalidates SQLite cache entry
-→ Re-introspects live API
+→ Re-resolves: OpenAPI spec (if cached) → live sampling → cold-start
 → Shows updated field list
 → Tells you to restart for tool shapes to update
 ```
+
+To get the best schema after changing your CMS:
+1. `discover_api` — re-fetch OpenAPI spec into cache
+2. `refresh_resource_schema({ resource_key: "posts", confirm: true })` — re-resolve schema
+3. Restart cms-mcp — tool shapes update
 
 ## Audit logging
 

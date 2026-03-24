@@ -47,6 +47,8 @@ export interface OpenApiDiscoveryResult {
   resources: DiscoveredResource[];
   suggestedEndpointConfig: Record<string, string>;
   rawPathCount: number;
+  /** Raw parsed spec object — used by openapi-parser.ts for schema extraction. */
+  rawSpec?: Record<string, unknown>;
 }
 
 // ─── Fetch spec ───────────────────────────────────────────────────────────────
@@ -215,13 +217,13 @@ export async function discoverOpenApi(
   const endpoints = extractEndpoints(spec);
   const resources = extractResources(endpoints);
 
-  // Build suggested endpoint config
+  // Build suggested endpoint config — include ALL discovered resources.
+  // Known resources get their canonical key (e.g. "posts" → "blogs").
+  // Unknown resources use their own name as the key so nothing is lost.
   const suggestedEndpointConfig: Record<string, string> = {};
   for (const r of resources) {
-    const knownKey = mapResourceKey(r.name);
-    if (knownKey) {
-      suggestedEndpointConfig[knownKey] = r.listPath;
-    }
+    const knownKey = mapResourceKey(r.name) ?? r.name;
+    suggestedEndpointConfig[knownKey] = r.listPath;
   }
 
   return {
@@ -233,6 +235,7 @@ export async function discoverOpenApi(
     resources,
     suggestedEndpointConfig,
     rawPathCount: Object.keys(spec.paths ?? {}).length,
+    rawSpec: spec as Record<string, unknown>,
   };
 }
 

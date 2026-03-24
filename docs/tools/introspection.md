@@ -22,12 +22,36 @@ These are the "meta" tools — they help Claude (and you) understand the CMS API
 
 Accepts **any configured endpoint key** — not limited to blogs/projects.
 
+The tool uses the same 4-tier schema resolution as startup:
+1. **OpenAPI spec** — if `discover_api` has been run and the spec is cached, schema is sourced from the spec (most reliable — every field declared)
+2. **Live sampling** — fetches up to 5 records, infers types from runtime values
+
 ```
 "Inspect the schema of my products endpoint"
 → inspect_endpoint_schema({ endpoint: "products" })
 ```
 
-Output:
+**Output (OpenAPI-sourced):**
+```
+## Schema: /api/products
+
+*Source: OpenAPI spec (path: /products) — 8 fields*
+
+| Field      | Type              | Required | Notes            |
+|------------|-------------------|----------|------------------|
+| id         | uuid              | ✓        | (uuid)           |
+| name       | string            | ✓        | —                |
+| price      | number            | ✓        | 0                |
+| status     | enum(draft|live)  | ✓        | "draft"          |
+| sku        | string?           | —        | —                |
+| image_url  | url?              | —        | (uri)            |
+| tags       | array             | —        | []               |
+| created_at | date              | ✓        | (date-time)      |
+
+> Schema sourced from OpenAPI specification — authoritative field list.
+```
+
+**Output (live sampling fallback):**
 ```
 ## Schema: /api/products
 
@@ -36,16 +60,10 @@ Sampled 5 records — 8 fields detected
 | Field      | Type              | Required | Example          |
 |------------|-------------------|----------|------------------|
 | id         | uuid              | ✓        | "abc123-..."     |
-| name       | string            | ✓        | "Widget Pro"     |
-| price      | number            | ✓        | 29.99            |
-| status     | enum(draft|live)  | ✓        | "draft"          |
-| sku        | string?           | —        | "WP-001"         |
-| image_url  | url?              | —        | "https://cdn..." |
-| tags       | array             | —        | ["electronics"]  |
-| created_at | date              | ✓        | "2024-01-15T..." |
+...
 ```
 
-This is the human-readable view. The machine-readable version is used internally by the generic tool factory.
+To get the most accurate schema, run `discover_api` first to cache the OpenAPI spec.
 
 ---
 
@@ -60,7 +78,7 @@ When you add new fields to your CMS or when a cold-start endpoint finally has re
 
 This:
 1. Invalidates the SQLite cache entry for `products`
-2. Fetches fresh live records from the endpoint
+2. Tries OpenAPI spec (if cached) — falls back to live sampling — falls back to cold-start
 3. Re-builds and re-caches the `ResourceSchema`
 4. Returns the updated field list
 5. **Prompts you to restart** so tool input shapes update

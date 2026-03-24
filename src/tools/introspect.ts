@@ -15,6 +15,8 @@ import { openApiCacheKey } from "../lib/schema-cache.js";
 import { ApiClient } from "../lib/api-client.js";
 import { inspectEndpoint } from "../lib/schema-inspector.js";
 import { refreshResourceSchema } from "../lib/startup-introspect.js";
+import { extractSchemaFromOpenApi, formatOpenApiSchema } from "../schema/openapi-parser.js";
+import type { OpenApiDiscoveryResult } from "../lib/openapi.js";
 
 export function registerIntrospectTools(
   server: McpServer,
@@ -193,6 +195,20 @@ export function registerIntrospectTools(
           };
         }
 
+        // Try OpenAPI spec first (most reliable — declared schema, not sampled)
+        if (cache) {
+          const discovery = cache.get<OpenApiDiscoveryResult>(openApiCacheKey(config.baseUrl));
+          if (discovery?.rawSpec) {
+            const openApiResult = extractSchemaFromOpenApi(discovery, config.baseUrl, endpointUrl);
+            if (openApiResult && openApiResult.fields.length > 0) {
+              return {
+                content: [{ type: "text" as const, text: formatOpenApiSchema(openApiResult, endpointUrl) }],
+              };
+            }
+          }
+        }
+
+        // Fall back to live sampling
         const report = await inspectEndpoint(client, endpointUrl);
         return {
           content: [{ type: "text" as const, text: report }],

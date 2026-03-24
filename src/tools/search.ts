@@ -1,7 +1,10 @@
 // src/tools/search.ts
 // Semantic search and knowledge tools.
-// Uses the local vector cache to answer "what did we build for X?" queries
-// without hitting the CMS API — fuzzy matching via TF-IDF cosine similarity.
+// Uses the local vector cache (TF-IDF or OpenAI embeddings) to answer
+// natural-language queries without hitting the CMS API directly.
+//
+// sync_all_content is now GENERIC — syncs every configured endpoint,
+// not just hardcoded "projects" and "blogs".
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -10,6 +13,7 @@ import { AuditLogger, withAudit } from "../lib/audit.js";
 import { ApiClient } from "../lib/api-client.js";
 import type { VectorCache } from "../lib/vector-cache.js";
 import type { CircuitBreaker } from "../lib/circuit-breaker.js";
+import { normalizeList } from "../lib/type-inference.js";
 
 export function registerSearchTools(
   server: McpServer,
@@ -26,9 +30,9 @@ export function registerSearchTools(
     "semantic_search",
     {
       query: z.string().min(1).max(500)
-        .describe("Natural language query — e.g. 'fintech dashboard project' or 'post about machine learning'"),
-      type: z.enum(["all", "project", "blog"]).default("all")
-        .describe("Filter by content type"),
+        .describe("Natural language query — e.g. 'dashboard project' or 'post about machine learning'"),
+      type: z.string().optional()
+        .describe("Filter by resource type (e.g. 'posts', 'projects'). Omit to search all."),
       limit: z.number().int().min(1).max(20).default(5)
         .describe("Maximum results to return"),
     },
@@ -46,14 +50,13 @@ export function registerSearchTools(
                 `"schemaCache": { "path": "~/.cms-mcp/schema-cache.db", "ttlMinutes": 60 }`,
                 "```",
                 "",
-                "Then sync content with `sync_all_content` to populate the index.",
+                "Then index your content with `sync_all_content`.",
               ].join("\n"),
             }],
           };
         }
 
-        const typeFilter = args.type === "all" ? undefined : args.type;
-        const results = await vectorCache.search(args.query, args.limit, typeFilter);
+        const results = await vectorCache.search(args.query, args.limit, args.type ?? undefined);
 
         if (results.length === 0) {
           return {
@@ -62,7 +65,7 @@ export function registerSearchTools(
               text: [
                 `No results found for "${args.query}".`,
                 "",
-                "The vector cache may be empty. Run `sync_all_content` to index your CMS content.",
+                "The vector index may be empty — run `sync_all_content` to index your CMS content.",
               ].join("\n"),
             }],
           };
@@ -79,12 +82,12 @@ export function registerSearchTools(
           const meta = r.metadata as any;
           lines.push(
             `### ${r.title} (${score}% match)`,
-            `**Type:** ${r.type} | **ID:** \`${r.id}\` | **Status:** ${meta.status ?? "?"}`,
+            `**Type:** ${r.type} | **ID:** \`${r.id}\`${meta?.status ? ` | **Status:** ${meta.status}` : ""}`,
           );
-          if (meta.summary || meta.excerpt) {
-            lines.push(`> ${(meta.summary ?? meta.excerpt ?? "").slice(0, 200)}`);
+          if (meta?.summary || meta?.excerpt || meta?.description) {
+            lines.push(`> ${(meta.summary ?? meta.excerpt ?? meta.description ?? "").toString().slice(0, 200)}`);
           }
-          if (meta.tech_stack && Array.isArray(meta.tech_stack)) {
+          if (meta?.tech_stack && Array.isArray(meta.tech_stack)) {
             lines.push(`**Tech:** ${meta.tech_stack.join(", ")}`);
           }
           lines.push("");
@@ -98,13 +101,17 @@ export function registerSearchTools(
   );
 
   // ── sync_all_content ─────────────────────────────────────────────────────
-  // Pulls all projects and blogs from CMS and indexes them in the vector cache
+  // Indexes ALL configured endpoints into the vector cache.
+  // Generic — works with any endpoint key, not just hardcoded projects/blogs.
 
   server.tool(
     "sync_all_content",
     {
-      types: z.array(z.enum(["projects", "blogs"])).default(["projects", "blogs"])
-        .describe("Which content types to sync"),
+      endpoints: z.array(z.string()).optional()
+        .describe(
+          "Specific endpoint keys to sync (e.g. [\"posts\", \"projects\"]). " +
+          "Omit to sync all configured endpoints.",
+        ),
     },
     async (args) => {
       return withAudit(audit, "sync_all_content", args as Record<string, unknown>, async () => {
@@ -117,60 +124,62 @@ export function registerSearchTools(
           };
         }
 
+        const allEndpoints = config.endpoints as Record<string, string | undefined>;
+        const keysToSync = args.endpoints
+          ? args.endpoints.filter((k) => allEndpoints[k])
+          : Object.keys(allEndpoints).filter((k) => k !== "media" && allEndpoints[k]);
+
+        if (keysToSync.length === 0) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "No endpoints to sync. Add entries to `endpoints` in your config.",
+            }],
+          };
+        }
+
         let totalSynced = 0;
         const details: string[] = [];
 
-        // Sync projects
-        if (args.types.includes("projects") && config.endpoints.projects) {
+        for (const key of keysToSync) {
+          const url = allEndpoints[key];
+          if (!url) continue;
+
           try {
-            const fetchFn = () => client.get<unknown>(config.endpoints.projects!);
+            const fetchFn = () => client.get<unknown>(url);
             const data = breaker
-              ? await breaker.execute("projects:list", fetchFn)
+              ? await breaker.execute(`${key}:list`, fetchFn)
               : await fetchFn();
 
             const items = normalizeList(data);
+            let synced = 0;
+
             for (const item of items as any[]) {
               const id = String(item.id ?? item._id ?? "");
               if (!id) continue;
-              await vectorCache.store(
-                id,
-                "project",
-                String(item.title ?? ""),
-                `${item.title ?? ""} ${item.summary ?? ""} ${item.description ?? ""} ${(item.tags ?? []).join(" ")} ${(item.tech_stack ?? []).join(" ")}`,
-                item,
-              );
-              totalSynced++;
-            }
-            details.push(`Projects: ${items.length} indexed`);
-          } catch (err) {
-            details.push(`Projects: error — ${(err as Error).message?.slice(0, 80)}`);
-          }
-        }
 
-        // Sync blogs
-        if (args.types.includes("blogs") && config.endpoints.blogs) {
-          try {
-            const fetchFn = () => client.get<unknown>(config.endpoints.blogs!);
-            const data = breaker
-              ? await breaker.execute("blogs:list", fetchFn)
-              : await fetchFn();
+              // Build searchable text from common content fields
+              const title = String(item.title ?? item.name ?? item.headline ?? item.subject ?? id);
+              const contentParts: string[] = [title];
 
-            const items = normalizeList(data);
-            for (const item of items as any[]) {
-              const id = String(item.id ?? item._id ?? "");
-              if (!id) continue;
-              await vectorCache.store(
-                id,
-                "blog",
-                String(item.title ?? ""),
-                `${item.title ?? ""} ${item.excerpt ?? ""} ${item.body ?? ""} ${(item.tags ?? []).join(" ")}`,
-                item,
-              );
-              totalSynced++;
+              for (const f of [
+                "summary", "description", "excerpt", "body", "content",
+                "tags", "tech_stack", "categories", "label",
+              ]) {
+                const v = item[f];
+                if (!v) continue;
+                if (Array.isArray(v)) contentParts.push(v.join(" "));
+                else if (typeof v === "string") contentParts.push(v);
+              }
+
+              await vectorCache.store(id, key, title, contentParts.join(" "), item);
+              synced++;
             }
-            details.push(`Blogs: ${items.length} indexed`);
+
+            totalSynced += synced;
+            details.push(`${key}: ${synced} indexed (${items.length} fetched)`);
           } catch (err) {
-            details.push(`Blogs: error — ${(err as Error).message?.slice(0, 80)}`);
+            details.push(`${key}: error — ${(err as Error).message?.slice(0, 80)}`);
           }
         }
 
@@ -182,12 +191,12 @@ export function registerSearchTools(
             text: [
               `✅ Content sync complete`,
               ``,
-              `**Synced:** ${totalSynced} items`,
+              `**Synced:** ${totalSynced} items across ${keysToSync.length} endpoint(s)`,
               ...details.map((d) => `  • ${d}`),
               ``,
               `**Cache stats:** ${stats.totalEntries} total entries, ${stats.vocabSize} vocabulary terms`,
               ``,
-              `You can now use \`semantic_search\` for fuzzy queries across all content.`,
+              `Use \`semantic_search\` for natural language queries across all indexed content.`,
             ].join("\n"),
           }],
         };
@@ -242,17 +251,4 @@ export function registerSearchTools(
       });
     },
   );
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function normalizeList(data: unknown): unknown[] {
-  if (Array.isArray(data)) return data;
-  if (data && typeof data === "object") {
-    for (const key of ["items", "data", "results", "projects", "blogs", "posts"]) {
-      const v = (data as any)[key];
-      if (Array.isArray(v)) return v;
-    }
-  }
-  return [];
 }

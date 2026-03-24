@@ -52,6 +52,7 @@ Works with **any REST API** — Supabase, PocketBase, Payload CMS, Directus, Str
 - [Security](#security)
 - [Testing](#testing)
 - [Docker](#docker)
+- [Current Limitations](#current-limitations)
 - [Migration from v0.3.x](#migration-from-v03x)
 - [Contributing](#contributing)
 
@@ -59,16 +60,24 @@ Works with **any REST API** — Supabase, PocketBase, Payload CMS, Directus, Str
 
 ## How It Works
 
-At startup, cms-mcp:
+At startup, cms-mcp resolves each endpoint schema using a 4-tier priority chain:
+
+| Tier | Source | Description |
+|------|--------|-------------|
+| **1 — Cache** | SQLite | Instant startup — uses previously cached schema, no API calls |
+| **2 — OpenAPI** | Spec | Parses your API's Swagger/OpenAPI spec — authoritative field list with types, enums, required/optional, readOnly |
+| **3 — Sampling** | Live API | Fetches up to 5 records, infers types from runtime values |
+| **4 — Cold-start** | Passthrough | No records, no spec — registers tools with `Record<unknown>` so you can still write |
+
+Then for each endpoint:
 
 1. Reads `config.endpoints` — any key, any URL (e.g. `"products": "/api/products"`)
-2. Fetches up to 5 live records from each endpoint
-3. Infers field types (uuid, date, url, email, slug, enum, string, number, boolean, array, object)
-4. Builds Zod validators from those inferred types
-5. Registers 7 MCP tools per endpoint (`list_X`, `get_X`, `preview_create_X`, `create_X`, `preview_update_X`, `update_X`, `delete_X`)
-6. Caches schemas in SQLite so restarts are instant
+2. Resolves schema via the tier chain above
+3. Builds Zod validators from resolved field definitions
+4. Registers 7 MCP tools (`list_X`, `get_X`, `preview_create_X`, `create_X`, `preview_update_X`, `update_X`, `delete_X`)
+5. Caches schema in SQLite so next startup hits Tier 1 instantly
 
-Claude receives tool descriptions that exactly match your CMS's real field names and types — not a hardcoded subset. If your CMS has `headline` instead of `title`, or `category_id` alongside `title`, all those fields are included automatically.
+Claude receives tool descriptions that exactly match your CMS's real field names and types — not a hardcoded subset. If your CMS has `headline` instead of `title`, or `category_id` alongside `status`, all those fields are present with the correct Zod type automatically.
 
 ---
 
@@ -77,9 +86,11 @@ Claude receives tool descriptions that exactly match your CMS's real field names
 | Feature | What it does |
 |---------|-------------|
 | **🆕 Generic schema-driven tools** | 7 tools auto-generated per endpoint from live field introspection |
+| **🆕 OpenAPI-first schema engine** | Spec-sourced schemas (4-tier: cache → OpenAPI → sampling → cold-start) |
 | **🆕 Any endpoint key** | `"products"`, `"authors"`, `"events"` — not limited to blogs/projects |
 | **🆕 Cold-start mode** | Passthrough tools registered even for empty endpoints |
 | **🆕 Schema refresh** | `refresh_resource_schema` updates cache without full restart |
+| **🆕 List configured endpoints** | `list_configured_endpoints` shows all keys, URLs, cache status |
 | **MCP Resources** | `cms://projects/{id}`, `cms://blogs/{id}` — Claude reads content directly |
 | **Zod validation firewall** | Runtime Zod shapes built from inferred types — every input validated |
 | **Atomic transactions + rollback** | Failed writes auto-revert — no half-created records |
@@ -542,6 +553,22 @@ docker compose up
 ```
 
 Multi-stage build — compiled JS + production deps only (~80MB image).
+
+---
+
+## Current Limitations
+
+| Limitation | Detail | Workaround |
+|-----------|--------|------------|
+| **Tool shapes are fixed at connect time** | MCP tool schemas are registered during the handshake — schema changes require a server restart | Run `refresh_resource_schema` to update the SQLite cache, then restart |
+| **PATCH only for updates** | `update_X` always sends `PATCH`. APIs that require `PUT` will reject it | Map the endpoint to a custom wrapper that converts PATCH→PUT |
+| **No nested/relational writes** | Create tools only write top-level fields — no deep nested objects or join-table writes | Post top-level records, then use secondary tools for relations |
+| **Sampling misses rare fields** | Tier-3 sampling fetches 5 records — optional fields absent in all 5 are not included | Use OpenAPI spec (Tier 2) or add `discover_api` + `refresh_resource_schema` after adding records |
+| **OpenAPI YAML not parsed** | YAML specs are detected but not parsed — only JSON specs are used | Convert your spec to JSON (`swagger-cli bundle --type json`) or set `openapi.discoveryUrl` to the JSON endpoint |
+| **No pagination abstraction** | `list_X` fetches a single page — no cursor iteration across all pages | Pass `limit`/`page` args manually; or sync all content with `sync_all_content` |
+| **`media` key is reserved** | The key `"media"` always routes to the dedicated upload handler | Name your media endpoint `"media"` — it gets file upload tools automatically |
+| **Single base URL** | All endpoints share one `baseUrl` + auth config | Run a second cms-mcp instance for a second API |
+| **No GraphQL** | Only REST/JSON APIs are supported | Use a REST wrapper or Hasura REST endpoints in front of GraphQL |
 
 ---
 

@@ -3,16 +3,23 @@
 // generic resource tools for each one.
 //
 // Called once from index.ts during server boot, BEFORE the MCP transport
-// connects. This is required because MCP tool schemas must be registered before
-// the session handshake — Claude receives the tool list at connection time.
+// connects (MCP tool schemas must be registered before the session handshake).
 //
-// Flow for each endpoint key:
-//   1. Check SQLite schema cache (avoids API calls on every restart)
-//   2. Cache miss → introspect live endpoint → populate cache
-//   3. Register generic tools via registerGenericResourceTools()
-//   4. Errors in one endpoint do NOT block others (isolated try/catch)
+// === Schema resolution priority (OpenAPI-first) ===
 //
-// "media" is skipped here because it has a special upload handler (media-proxy)
+//   Tier 1 — SQLite cache hit → use immediately (instant startup, no API calls)
+//   Tier 2 — OpenAPI spec available → extract schema from spec ($ref-resolved)
+//   Tier 3 — Live sampling → fetch 5 records, infer types from values
+//   Tier 4 — Cold-start → passthrough mode (no schema, fields: Record<unknown>)
+//
+// Why OpenAPI first?
+//   - Sampling infers types from up to 5 records. Optional fields that happen
+//     to be null in all 5 samples are missed. Single-sample enum detection fails.
+//     New/empty endpoints fall through to cold-start.
+//   - OpenAPI declares every field, type, format, enum, required/optional, and
+//     readOnly flag — zero false positives, no missing fields.
+//
+// "media" is skipped here because it has a dedicated upload handler (media-proxy)
 // that requires custom tool logic beyond standard CRUD.
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -22,25 +29,40 @@ import type { ApprovalGate } from "./approval-gate.js";
 import type { SchemaCache } from "./schema-cache.js";
 import { ApiClient } from "./api-client.js";
 import { introspectResourceSchema } from "./schema-introspector.js";
-import { resourceSchemaCacheKey, type ResourceSchema } from "./resource-schema.js";
+import {
+  resourceSchemaCacheKey,
+  type ResourceSchema,
+  type FieldDefinition,
+} from "./resource-schema.js";
+import {
+  detectIdField,
+  detectTitleField,
+  detectStatusField,
+} from "./type-inference.js";
 import { registerGenericResourceTools } from "../tools/generic-resource.js";
+import { openApiCacheKey } from "./schema-cache.js";
+import type { OpenApiDiscoveryResult } from "./openapi.js";
+import { extractSchemaFromOpenApi } from "../schema/openapi-parser.js";
 
-// Keys that have their own dedicated tool files and should NOT go through
-// the generic factory (they need custom multipart/proxy logic).
+// Keys that have dedicated tool files — skip the generic factory for these.
 const RESERVED_KEYS = new Set(["media"]);
 
-// ─── Main export ──────────────────────────────────────────────────────────────
+// ─── Summary ──────────────────────────────────────────────────────────────────
 
 export interface IntrospectSummary {
-  /** Endpoint keys successfully registered as generic tools. */
+  /** Endpoint keys successfully registered with full schema-driven tools. */
   registered: string[];
-  /** Endpoint keys in cold-start mode (0 records found). */
+  /** Endpoint keys registered using OpenAPI spec (most reliable). */
+  fromOpenApi: string[];
+  /** Endpoint keys in cold-start mode (0 records, no OpenAPI schema). */
   coldStart: string[];
   /** Endpoint keys that were skipped (reserved or no URL configured). */
   skipped: string[];
   /** Endpoint keys that failed with an error. */
   failed: string[];
 }
+
+// ─── Main export ──────────────────────────────────────────────────────────────
 
 /**
  * Introspect all configured endpoints and register generic resource tools
@@ -54,10 +76,11 @@ export async function introspectAndRegisterAll(
   cache: SchemaCache | undefined,
 ): Promise<IntrospectSummary> {
   const summary: IntrospectSummary = {
-    registered: [],
-    coldStart:  [],
-    skipped:    [],
-    failed:     [],
+    registered:  [],
+    fromOpenApi:  [],
+    coldStart:   [],
+    skipped:     [],
+    failed:      [],
   };
 
   const client = new ApiClient(config);
@@ -68,30 +91,36 @@ export async function introspectAndRegisterAll(
     return summary;
   }
 
+  // Load cached OpenAPI discovery result (if available) for tier-2 schema extraction
+  const openApiCached = cache?.get<OpenApiDiscoveryResult>(openApiCacheKey(config.baseUrl)) ?? null;
+
   for (const [key, url] of endpointEntries) {
     if (!url) {
       summary.skipped.push(key);
       continue;
     }
-
     if (RESERVED_KEYS.has(key)) {
       summary.skipped.push(key);
       continue;
     }
 
     try {
-      const schema = await resolveSchema(client, key, url, config.baseUrl, cache);
+      const { schema, tier } = await resolveSchema(
+        client, key, url, config.baseUrl, cache, openApiCached,
+      );
+
       registerGenericResourceTools(server, config, audit, gate, schema);
 
       if (schema.source === "cold-start") {
         summary.coldStart.push(key);
       } else {
         summary.registered.push(key);
+        if (tier === "openapi") summary.fromOpenApi.push(key);
       }
 
       console.error(
         `[cms-mcp] Registered tools for "${key}" ` +
-        `(${schema.source}, ${schema.fields.length} fields, ${schema.recordCount} records sampled)`,
+        `[tier: ${tier}, source: ${schema.source}, fields: ${schema.fields.length}, records: ${schema.recordCount}]`,
       );
     } catch (err) {
       console.error(
@@ -105,7 +134,9 @@ export async function introspectAndRegisterAll(
   return summary;
 }
 
-// ─── Schema resolution (cache-first) ─────────────────────────────────────────
+// ─── Schema resolution tiers ──────────────────────────────────────────────────
+
+type SchemaTier = "cache" | "openapi" | "sampling" | "cold-start";
 
 async function resolveSchema(
   client: ApiClient,
@@ -113,27 +144,47 @@ async function resolveSchema(
   endpointUrl: string,
   baseUrl: string,
   cache: SchemaCache | undefined,
-): Promise<ResourceSchema> {
-  const cacheKey = resourceSchemaCacheKey(baseUrl, resourceKey);
+  openApi: OpenApiDiscoveryResult | null,
+): Promise<{ schema: ResourceSchema; tier: SchemaTier }> {
 
-  // 1. Try cache first
+  // ── Tier 1: SQLite cache ──────────────────────────────────────────────────
+  const cacheKey = resourceSchemaCacheKey(baseUrl, resourceKey);
   if (cache) {
     const cached = cache.get<ResourceSchema>(cacheKey);
     if (cached) {
       console.error(`[cms-mcp] Schema for "${resourceKey}" loaded from cache.`);
-      return { ...cached, source: "cached" };
+      return { schema: { ...cached, source: "cached" }, tier: "cache" };
     }
   }
 
-  // 2. Cache miss — introspect live
-  const schema = await introspectResourceSchema(client, resourceKey, endpointUrl);
-
-  // 3. Cache the result (even cold-starts, so we don't hammer an empty endpoint on every restart)
-  if (cache) {
-    cache.set(cacheKey, schema);
+  // ── Tier 2: OpenAPI spec ──────────────────────────────────────────────────
+  if (openApi?.rawSpec) {
+    const result = extractSchemaFromOpenApi(openApi, baseUrl, endpointUrl);
+    if (result && result.fields.length > 0) {
+      const schema: ResourceSchema = {
+        resourceKey,
+        endpointUrl,
+        fields:      result.fields,
+        idField:     detectIdField(result.fields),
+        titleField:  detectTitleField(result.fields),
+        statusField: detectStatusField(result.fields),
+        sampledAt:   Date.now(),
+        recordCount: 0, // not sampled — came from spec
+        source:      "live", // "live" = reliably sourced (spec counts as live)
+      };
+      cache?.set(cacheKey, schema);
+      console.error(`[cms-mcp] Schema for "${resourceKey}" extracted from OpenAPI spec (${result.fields.length} fields via ${result.sourcePath}).`);
+      return { schema, tier: "openapi" };
+    }
+    console.error(`[cms-mcp] OpenAPI spec found but no schema for "${resourceKey}" — falling back to sampling.`);
   }
 
-  return schema;
+  // ── Tier 3: Live sampling ─────────────────────────────────────────────────
+  const schema = await introspectResourceSchema(client, resourceKey, endpointUrl);
+  cache?.set(cacheKey, schema);
+
+  const tier: SchemaTier = schema.source === "cold-start" ? "cold-start" : "sampling";
+  return { schema, tier };
 }
 
 // ─── On-demand schema refresh ─────────────────────────────────────────────────
@@ -141,8 +192,9 @@ async function resolveSchema(
 /**
  * Invalidate and re-introspect a single resource schema.
  * Used by the refresh_resource_schema tool in introspect.ts.
- * Returns the new schema (but NOTE: the registered MCP tools are NOT updated —
- * the user must restart the server for tool shapes to reflect the new schema).
+ *
+ * Follows the same tier priority: OpenAPI → sampling → cold-start.
+ * NOTE: registered MCP tool shapes are NOT updated — restart required.
  */
 export async function refreshResourceSchema(
   client: ApiClient,
@@ -156,13 +208,12 @@ export async function refreshResourceSchema(
   // Invalidate stale entry
   cache?.invalidate(cacheKey);
 
-  // Introspect fresh
-  const schema = await introspectResourceSchema(client, resourceKey, endpointUrl);
+  // Try OpenAPI from cache (if available)
+  const openApi = cache?.get<OpenApiDiscoveryResult>(openApiCacheKey(baseUrl)) ?? null;
 
-  // Re-cache
-  if (cache) {
-    cache.set(cacheKey, schema);
-  }
+  const { schema } = await resolveSchema(
+    client, resourceKey, endpointUrl, baseUrl, cache, openApi,
+  );
 
   return schema;
 }

@@ -20,8 +20,8 @@ export function registerResources(
 
   // ── Projects Resource Template ──────────────────────────────────────────
 
-  if (config.endpoints.projects) {
-    const projectsEndpoint = config.endpoints.projects;
+  if (config.endpoints["projects"]) {
+    const projectsEndpoint = config.endpoints["projects"];
 
     server.resource(
       "project",
@@ -84,8 +84,8 @@ export function registerResources(
 
   // ── Blogs Resource Template ─────────────────────────────────────────────
 
-  if (config.endpoints.blogs) {
-    const blogsEndpoint = config.endpoints.blogs;
+  if (config.endpoints["blogs"]) {
+    const blogsEndpoint = config.endpoints["blogs"];
 
     server.resource(
       "blog",
