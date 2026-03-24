@@ -1,19 +1,25 @@
 // src/lib/openapi.ts
 // OpenAPI / Swagger discovery engine.
 // Given a baseUrl, finds the spec, parses it, and suggests endpoint config.
-// Supports OpenAPI 3.x and Swagger 2.x (both JSON and YAML shims).
+// Supports OpenAPI 3.x and Swagger 2.x, both JSON and YAML.
+
+import { load as parseYaml } from "js-yaml";
 
 const DISCOVERY_PATHS = [
   "/.well-known/openapi.json",
   "/openapi.json",
   "/openapi.yaml",
+  "/openapi.yml",
   "/swagger.json",
+  "/swagger.yaml",
   "/swagger/v1/swagger.json",
   "/api-docs/json",
   "/api-docs",
   "/api/openapi.json",
+  "/api/openapi.yaml",
   "/api/swagger.json",
   "/docs/openapi.json",
+  "/docs/openapi.yaml",
 ];
 
 const TIMEOUT_MS = 10_000;
@@ -69,8 +75,15 @@ async function tryFetchSpec(url: string): Promise<unknown | null> {
     try {
       return JSON.parse(text);
     } catch {
-      // YAML shim: return raw text so caller can handle it
-      if (ct.includes("yaml") || url.endsWith(".yaml")) return { _yaml: text };
+      // Try YAML parsing for .yaml URLs or yaml content-type
+      if (ct.includes("yaml") || url.endsWith(".yaml") || url.endsWith(".yml")) {
+        try {
+          const parsed = parseYaml(text);
+          if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+        } catch {
+          // fall through
+        }
+      }
       return null;
     }
   } catch {
@@ -199,7 +212,7 @@ export async function discoverOpenApi(
 
   for (const url of urlsToTry) {
     const result = await tryFetchSpec(url);
-    if (result && !(result as any)._yaml) {
+    if (result) {
       spec = result;
       specUrl = url;
       break;

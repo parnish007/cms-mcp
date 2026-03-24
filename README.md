@@ -60,54 +60,66 @@ Works with **any REST API** — Supabase, PocketBase, Payload CMS, Directus, Str
 
 ## How It Works
 
-At startup, cms-mcp resolves each endpoint schema using a 4-tier priority chain:
+cms-mcp is a schema-aware bridge: it reads your API's shape at startup, builds typed MCP tools from that shape, and registers them before Claude connects.
 
-| Tier | Source | Description |
-|------|--------|-------------|
-| **1 — Cache** | SQLite | Instant startup — uses previously cached schema, no API calls |
-| **2 — OpenAPI** | Spec | Parses your API's Swagger/OpenAPI spec — authoritative field list with types, enums, required/optional, readOnly |
-| **3 — Sampling** | Live API | Fetches up to 5 records, infers types from runtime values |
-| **4 — Cold-start** | Passthrough | No records, no spec — registers tools with `Record<unknown>` so you can still write |
+### Schema resolution (4-tier priority chain)
 
-Then for each endpoint:
+| Tier | Source | Speed | When used |
+|------|--------|-------|-----------|
+| **1 — Cache** | SQLite | Instant | Previous run cached a schema — no API calls |
+| **2 — OpenAPI** | JSON/YAML spec | ~200ms | `openapi.autoDiscover: true` or `discoveryUrl` set — authoritative |
+| **3 — Sampling** | Live records | ~500ms | No spec available — fetches 5 records, infers types |
+| **4 — Cold-start** | None | Instant | Zero records + no spec — passthrough tools, still writable |
 
-1. Reads `config.endpoints` — any key, any URL (e.g. `"products": "/api/products"`)
-2. Resolves schema via the tier chain above
-3. Builds Zod validators from resolved field definitions
-4. Registers 7 MCP tools (`list_X`, `get_X`, `preview_create_X`, `create_X`, `preview_update_X`, `update_X`, `delete_X`)
-5. Caches schema in SQLite so next startup hits Tier 1 instantly
+**Why OpenAPI first?** Sampling 5 records misses optional fields and fails on empty endpoints. An OpenAPI spec declares every field, format, required status, and enum value explicitly — zero false positives. If your API has a spec (JSON or YAML), cms-mcp uses it.
 
-Claude receives tool descriptions that exactly match your CMS's real field names and types — not a hardcoded subset. If your CMS has `headline` instead of `title`, or `category_id` alongside `status`, all those fields are present with the correct Zod type automatically.
+### What gets registered per endpoint
+
+For each key in `config.endpoints` (except `media`), exactly **3 tools** are registered:
+
+| Tool | What it does |
+|------|-------------|
+| `list_X` | Filter, paginate, full-text search. Enum fields become optional filter params. |
+| `get_X` | Fetch single record by ID. |
+| `mutate_X` | Create / update / delete / preview — one tool, `action` param selects the operation. |
+
+Foreign-key fields (e.g. `author_id`) are auto-detected and surfaced as relation hints in tool descriptions: `author_id → get_authors`.
+
+All schemas are cached in SQLite — next startup hits Tier 1 instantly.
 
 ---
 
 ## Features
 
+### Core (always on)
+
 | Feature | What it does |
 |---------|-------------|
-| **🆕 Generic schema-driven tools** | 7 tools auto-generated per endpoint from live field introspection |
-| **🆕 OpenAPI-first schema engine** | Spec-sourced schemas (4-tier: cache → OpenAPI → sampling → cold-start) |
-| **🆕 Any endpoint key** | `"products"`, `"authors"`, `"events"` — not limited to blogs/projects |
-| **🆕 Cold-start mode** | Passthrough tools registered even for empty endpoints |
-| **🆕 Schema refresh** | `refresh_resource_schema` updates cache without full restart |
-| **🆕 List configured endpoints** | `list_configured_endpoints` shows all keys, URLs, cache status |
-| **MCP Resources** | `cms://projects/{id}`, `cms://blogs/{id}` — Claude reads content directly |
-| **Zod validation firewall** | Runtime Zod shapes built from inferred types — every input validated |
+| **3 tools per endpoint** | `list_X`, `get_X`, `mutate_X` — small, predictable tool surface |
+| **OpenAPI-first schema** | 4-tier: cache → OpenAPI (JSON/YAML) → sampling → cold-start passthrough |
+| **Any endpoint key** | `"products"`, `"authors"`, `"events"` — any name, any REST endpoint |
+| **Relation hints** | FK fields (`author_id`) linked to matching endpoints in tool descriptions |
+| **Zod validation firewall** | Dynamic Zod shapes built at startup — MCP SDK validates before handlers run |
 | **Atomic transactions + rollback** | Failed writes auto-revert — no half-created records |
-| **Diff preview before writes** | Field-level change table before anything hits your API |
-| **Policy engine** | 10 rule types enforce publishing standards across teams |
-| **Human approval gate** | Local dashboard — Claude pauses, you click Approve/Reject |
-| **OpenAI semantic search** | Real embeddings (text-embedding-3-small) or local TF-IDF |
-| **Auto-schema inspector** | `inspect_endpoint_schema` fetches live records, shows field types |
-| **OpenAPI auto-discovery** | Scans your API for a Swagger/OpenAPI spec on startup |
-| **Circuit breaker** | Serves cached responses when your CMS API goes down |
-| **Content distillation** | HTML→Markdown, junk field stripping, metadata headers |
-| **GitHub webhook mode** | Auto-creates draft entries when you push to a repo |
-| **Schema cache** | SQLite-backed schema cache with TTL invalidation |
-| **Audit logging** | Every tool call logged — tool, args, outcome, duration |
-| **Read-only mode** | Disable all writes for exploratory sessions |
-| **SSRF + security hardening** | Private IPs blocked, no redirect following, 30s timeouts |
-| **78 tests** | 6 suites — policy, security, vector cache, circuit breaker, distiller, OpenAPI |
+| **Diff preview** | `mutate_X({ action: "preview" })` — field-level change table before any API call |
+| **Cold-start passthrough** | Empty endpoints get tools immediately — no startup failure |
+| **Schema cache** | SQLite-backed TTL cache — instant restarts after first run |
+| **Audit logging** | Every call: tool name, args (secrets redacted), outcome, duration |
+| **Read-only mode** | `--readonly` disables all write tools |
+| **SSRF hardening** | Private IPs, loopback, AWS metadata, IPv6 ULA blocked |
+| **`npx cms-mcp init`** | Detects your CMS type and writes a starter config in seconds |
+
+### Optional plugins (registered only when config block is present)
+
+| Plugin | Config block | What it adds |
+|--------|-------------|--------------|
+| **Approval gate** | `"approvals": {...}` | Human click required before any write executes |
+| **Policy engine** | `"policies": "..."` | `check_policies`, `init_policies` — 10 rule types |
+| **Semantic search** | `"schemaCache"` + `"embedding"` | `sync_all_content`, `semantic_search`, `knowledge_status` |
+| **GitHub** | `"github": {...}` | `scan_repo`, `sync_repo_to_project`, `list_repos` |
+| **Webhook** | `--webhook` + `"webhook": {...}` | Auto-draft on GitHub push |
+| **Circuit breaker** | always active | Cached fallback when CMS API goes down |
+| **Content distillation** | always active | HTML→Markdown for MCP Resources |
 
 ---
 
@@ -159,7 +171,13 @@ docker compose up
 }
 ```
 
-Any key works. At startup, cms-mcp generates `list_posts`, `create_posts`, `list_products`, `create_products`, etc. — with schemas matching whatever fields your API actually has.
+Any key works. At startup, cms-mcp generates `list_posts`, `get_posts`, `mutate_posts`, `list_products`, `get_products`, `mutate_products`, etc. — schemas built from your API's actual fields.
+
+Or skip the manual config and let `init` detect your CMS:
+
+```bash
+npx cms-mcp init --base-url https://your-api.com/api
+```
 
 **2. Set environment variables:**
 ```bash
@@ -268,11 +286,19 @@ claude mcp add cms-mcp -- npx cms-mcp --config ./cms-mcp.config.json
 
 Any string prefixed with `env:` is resolved from the environment at startup. Secrets are **never** written to logs.
 
+### CLI commands
+
+```bash
+npx cms-mcp init --base-url <url>   # Detect CMS and write starter config
+npx cms-mcp --config <path>         # Start MCP server
+```
+
 ### CLI flags
 
 | Flag | Description |
 |------|-------------|
 | `--config <path>`, `-c` | Config file path |
+| `--base-url <url>`, `-u` | Base URL (used with `init`) |
 | `--readonly` | Disable all write tools |
 | `--approval` | Enable approval gate even without `approvals` config block |
 | `--webhook` | Start GitHub webhook listener |
@@ -282,101 +308,121 @@ Any string prefixed with `env:` is resolved from the environment at startup. Sec
 
 ## Generic Tool System
 
-### How schema introspection works
+### The 3-tool model
 
-For each key in `config.endpoints` (except `media`), cms-mcp:
+For every key in `config.endpoints` (except `media`), exactly 3 tools are registered:
 
-1. **Checks the SQLite schema cache** — if a fresh entry exists, uses it (no API call)
-2. **Fetches up to 5 live records** — `GET /endpoint?limit=5`
-3. **Infers field types** from the actual values:
+#### `list_X`
+Params: `limit` (default 20), `search` (full-text), plus one optional filter per `enum(...)` field.
 
-| Inferred type | What it means | Zod validator |
-|---|---|---|
-| `uuid` | UUID-format string | `z.string().uuid()` |
-| `date` | ISO 8601 date string | `z.string().datetime()` |
-| `url` | HTTP/HTTPS URL | `z.string().url()` |
-| `email` | Email address | `z.string().email()` |
-| `slug` | URL-safe lowercase slug | `z.string().regex(...)` |
-| `enum(a\|b\|c)` | Closed set of string values | `z.enum(["a","b","c"])` |
-| `string` | Generic string | `z.string()` |
-| `number` | Numeric value | `z.number()` |
-| `boolean` | True/false | `z.boolean()` |
-| `array` | Array of any values | `z.array(z.unknown())` |
-| `object` | Nested object | `z.record(z.unknown())` |
-| Any `*?` | Nullable variant | base type + `.optional()` |
+```
+"List my published posts"       → list_posts({ status: "published", limit: 20 })
+"Find products mentioning 'pro'" → list_products({ search: "pro" })
+```
 
-4. **Builds Zod shapes** — `create` mode excludes system fields (`id`, `created_at`, etc.), `update` mode makes all fields optional + requires `id`
-5. **Registers 7 tools** per resource (see below)
-6. **Caches the schema** in SQLite (TTL from `schemaCache.ttlMinutes`, default 60m)
+#### `get_X`
+Params: `id` (required). Returns the full record as JSON.
 
-### Tools generated per endpoint
+#### `mutate_X`
+One tool for all write operations. The `action` param selects what happens:
 
-For an endpoint key `X`, these tools are registered:
+| action | What it does | confirm required? |
+|--------|-------------|------------------|
+| `"preview"` | Show diff table — no API call | no |
+| `"create"` | POST new record | yes |
+| `"update"` | PATCH existing record by `id` | yes |
+| `"delete"` | DELETE record by `id` | yes |
 
-| Tool | Description |
-|------|-------------|
-| `list_X` | List records. Params: `limit`, `search`, plus any enum-typed fields as filters |
-| `get_X` | Fetch a single record by ID |
-| `preview_create_X` | Show a diff table of what will be created — no API call |
-| `create_X` | Create a record. Requires `confirm: true`. All writable fields available |
-| `preview_update_X` | Show a diff table of what will change — fetches current record |
-| `update_X` | Update a record. Requires `id` + `confirm: true` |
-| `delete_X` | Delete a record. Requires `id` + `confirm: true`. Gated by approval if configured |
+```
+"Preview creating a post titled Hello World"
+→ mutate_posts({ action: "preview", data: { title: "Hello World", status: "draft" } })
+
+"Create it"
+→ mutate_posts({ action: "create", data: { title: "Hello World", status: "draft" }, confirm: true })
+
+"Delete post 42"
+→ mutate_posts({ action: "delete", id: "42", confirm: true })
+```
+
+### Schema → Zod type mapping
+
+| OpenAPI / inferred type | Zod validator |
+|------------------------|---------------|
+| `string` / `format: uuid` | `z.string().uuid()` |
+| `string` / `format: date-time` | `z.string().datetime()` |
+| `string` / `format: uri` | `z.string().url()` |
+| `string` / `format: email` | `z.string().email()` |
+| `enum: ["a","b","c"]` | `z.enum(["a","b","c"])` |
+| `string` | `z.string()` |
+| `integer` / `number` | `z.number()` |
+| `boolean` | `z.boolean()` |
+| `array` | `z.array(z.unknown())` |
+| `object` | `z.record(z.unknown())` |
+| `nullable: true` or `type: ["T","null"]` | base type `.nullable()` |
+| `readOnly: true` (OpenAPI only) | excluded from create/update inputs |
+
+### Relation hints
+
+Fields matching `*_id` / `*_ids` / `*Id` / `*Ids` patterns are cross-referenced against configured endpoint keys. When a match is found, a hint appears in the tool description:
+
+```
+list_posts — ... Relations: author_id → get_authors | tag_ids[] → list_tags
+```
+
+Claude uses this to know which tool to call when resolving related records.
 
 ### Cold-start mode
 
-If an endpoint returns zero records at introspection time (brand-new CMS), tools are still registered in **passthrough mode**:
+Zero records + no OpenAPI spec → tools registered in passthrough mode. `mutate_X` accepts `data: Record<string, unknown>` — pass any key-value pairs.
 
-- `create_X` accepts `fields: Record<string, unknown>` — pass any key-value pairs
-- `update_X` accepts `id` + `fields: Record<string, unknown>`
-- Tools display a notice explaining that field hints aren't available yet
+**Graduating from cold-start:**
+1. Create one record in your CMS
+2. `"Refresh the schema for X"` → `refresh_resource_schema`
+3. Restart cms-mcp
 
-**To upgrade from cold-start to full schema:**
-1. Create at least one record in your CMS
-2. Ask Claude: `"Refresh the schema for X"` (calls `refresh_resource_schema`)
-3. Restart cms-mcp — the new tool shapes will be applied
-
-### Schema cache and refresh
+### Schema refresh workflow
 
 ```
-Startup: check SQLite → cache hit → use immediately (fast)
-                      → cache miss → introspect live API → cache result
-
-Manual refresh: refresh_resource_schema → invalidate cache → re-introspect → re-cache
-                → restart required for tool shapes to update
+discover_api                             ← re-fetch OpenAPI spec into cache
+refresh_resource_schema({ resource_key: "posts", confirm: true })
+[restart cms-mcp]                        ← tool shapes update
 ```
-
-Clear all cached schemas: ask Claude `"Clear the schema cache"` (calls `clear_cache`).
 
 ---
 
 ## Tools Reference
 
-### Generic resource tools (per configured endpoint)
+### Per-endpoint tools (× number of configured endpoints, except `media`)
 
-See [Generic Tool System](#generic-tool-system) above. For endpoint key `posts`:
-`list_posts` · `get_posts` · `preview_create_posts` · `create_posts` · `preview_update_posts` · `update_posts` · `delete_posts`
+| Tool | Params | Notes |
+|------|--------|-------|
+| `list_X` | `limit`, `search`, enum filters | |
+| `get_X` | `id` | |
+| `mutate_X` | `action`, `id?`, `data?`, `confirm?` | Covers create / update / delete / preview |
 
-### Media (3 tools)
+**v0.4 aliases** (deprecated, removed in v0.6): `preview_create_X`, `create_X`, `preview_update_X`, `update_X`, `delete_X` — all forward to `mutate_X`.
+
+### Media (always, if `"media"` key configured)
 `upload_media_from_url` · `list_media` · `delete_media`
 
-The `media` endpoint key is reserved for these dedicated tools (multipart upload, SSRF-hardened proxy).
+The `media` key is reserved for these dedicated tools (multipart upload, SSRF-hardened proxy, 50MB cap).
 
-### GitHub (3 tools)
-`scan_repo` · `sync_repo_to_project` · `list_repos`
+### Introspection (always)
+`discover_api` · `apply_discovered_endpoints` · `inspect_endpoint_schema` · `refresh_resource_schema` · `list_configured_endpoints` · `cache_stats` · `clear_cache`
 
-### Introspection (9 tools)
-`discover_api` · `apply_discovered_endpoints` · `inspect_endpoint_schema` · `refresh_resource_schema` · `list_configured_endpoints` · `check_policies` · `init_policies` · `cache_stats` · `clear_cache`
+### Optional plugin tools
 
-### Search (3 tools)
-`semantic_search` · `sync_all_content` · `knowledge_status`
+| Plugin | Tools registered |
+|--------|-----------------|
+| Policy (`"policies"`) | `check_policies` · `init_policies` |
+| Search (`"schemaCache"`) | `semantic_search` · `sync_all_content` · `knowledge_status` |
+| GitHub (`"github"`) | `scan_repo` · `sync_repo_to_project` · `list_repos` |
 
 ### MCP Resources
+One resource pair per configured endpoint:
 ```
-cms://projects          → List all projects
-cms://projects/{id}     → Read a single project (distilled HTML→Markdown)
-cms://blogs             → List all blog posts
-cms://blogs/{id}        → Read a single blog post (distilled)
+cms://posts          → List all posts
+cms://posts/{id}     → Single post (HTML distilled to Markdown)
 ```
 
 ---
@@ -397,13 +443,13 @@ Or in config:
 {
   "approvals": {
     "port": 2323,
-    "tools": ["publish_posts", "delete_posts", "delete_products"]
+    "tools": ["mutate_posts", "mutate_products"]
   }
 }
 ```
 
 **Flow:**
-1. Claude calls `delete_posts`
+1. Claude calls `mutate_posts({ action: "delete", id: "42", confirm: true })`
 2. cms-mcp prints: `Approval required — open http://localhost:2323`
 3. Browser shows the diff preview with Approve / Reject buttons
 4. You click Approve → write executes

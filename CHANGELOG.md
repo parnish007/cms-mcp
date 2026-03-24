@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.5.0] — 2026-03-25
+
+### Added
+
+**3-tool model per endpoint**
+- `mutate_X` — single tool covering create / update / delete / preview via `action` param
+- `action: "preview"` shows diff without writing — no `confirm` required
+- All four security pillars maintained: Zod validation, atomic transactions + rollback, diff preview, approval gate
+- `src/tools/generic-resource.ts` rewritten; v0.4 alias tools (`create_X`, `update_X`, `delete_X`, `preview_create_X`, `preview_update_X`) kept as deprecated wrappers forwarding to `mutate_X`
+
+**Relation hints**
+- `src/lib/relation-detector.ts` — scans `FieldDefinition[]` for `*_id`, `*_ids`, `*Id`, `*Ids` patterns
+- Cross-references against configured endpoint keys (tries exact, plural, singular, camelCase variants)
+- Returns `RelationHint[]` with field name, target endpoint key, and cardinality (`"one"` | `"many"`)
+- Added `relationHints?: RelationHint[]` to `ResourceSchema`
+- `formatRelationHints()` renders hints in tool descriptions: `author_id → get_authors | tag_ids[] → list_tags`
+- Detection runs in `startup-introspect.ts` after schema resolution
+
+**OpenAPI YAML support**
+- `js-yaml` added as production dependency
+- `tryFetchSpec()` in `openapi.ts` now parses YAML responses using `js-yaml` for `.yaml`/`.yml` URLs and `content-type: yaml`
+- Discovery paths expanded: `/openapi.yml`, `/swagger.yaml`, `/api/openapi.yaml`, `/docs/openapi.yaml`
+- Old `_yaml` shim approach removed — YAML is now fully parsed into spec objects
+
+**`npx cms-mcp init`**
+- `src/cli/init.ts` — `runInit({ baseUrl, config })` probes baseUrl for CMS signatures
+- Detected CMSes: Supabase/PostgREST, Strapi v4/v5, Directus, PocketBase, Payload CMS, generic fallback
+- Writes starter `cms-mcp.config.json` with detected auth type, common endpoint paths, schema cache config
+- Usage: `npx cms-mcp init --base-url https://your-api.com/api`
+- Routed in `src/index.ts` when `argv[0] === "init"`
+
+**Plugin-conditional tool registration**
+- `registerGitHubTools` now only called when `config.github` is present
+- `registerSearchTools` now only called when `config.schemaCache` is present (search requires vector cache)
+- Startup banner now shows `Plugins:` line instead of `Features:` and lists only active plugins
+- Banner distinguishes OpenAPI-sourced vs sampled vs cold-start per endpoint
+
+### Changed
+
+- `buildZodShape()` in `resource-schema.ts` now accepts `"mutate"` mode — all writable fields optional (used for `data` param inside `mutate_X`)
+- `ResourceSchema` interface extended with optional `relationHints?: RelationHint[]`
+- `src/index.ts` version bumped to `0.5.0`
+- Server description updated to reflect 3-tool model
+
+### Fixed
+
+- `mcpServer.tool()` calls in `generic-resource.ts` now pass a description string as second argument (aligns with MCP SDK tool overload that accepts description)
+
+---
+
 All notable changes to cms-mcp are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).

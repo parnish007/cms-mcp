@@ -1,7 +1,7 @@
 {
   "name": "cms-mcp",
-  "version": "0.3.0",
-  "description": "Universal MCP server for managing CMS content — blogs, projects, media — through Claude with semantic search, OpenAPI discovery, and policy enforcement",
+  "version": "0.5.0",
+  "description": "Universal MCP server for any REST CMS — 3 schema-driven tools per endpoint, OpenAPI-first schema resolution, and optional plugins for approvals, policies, and semantic search",
   "type": "module",
   "bin": {
     "cms-mcp": "./build/index.js"
@@ -42,10 +42,12 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
     "better-sqlite3": "^12.8.0",
+    "js-yaml": "^4.1.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.8.0"

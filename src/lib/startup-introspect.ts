@@ -43,6 +43,7 @@ import { registerGenericResourceTools } from "../tools/generic-resource.js";
 import { openApiCacheKey } from "./schema-cache.js";
 import type { OpenApiDiscoveryResult } from "./openapi.js";
 import { extractSchemaFromOpenApi } from "../schema/openapi-parser.js";
+import { detectRelations } from "./relation-detector.js";
 
 // Keys that have dedicated tool files — skip the generic factory for these.
 const RESERVED_KEYS = new Set(["media"]);
@@ -108,6 +109,10 @@ export async function introspectAndRegisterAll(
       const { schema, tier } = await resolveSchema(
         client, key, url, config.baseUrl, cache, openApiCached,
       );
+
+      // Attach relation hints (cross-endpoint FK detection)
+      const allKeys = endpointEntries.map(([k]) => k);
+      schema.relationHints = detectRelations(schema.fields, allKeys, key);
 
       registerGenericResourceTools(server, config, audit, gate, schema);
 

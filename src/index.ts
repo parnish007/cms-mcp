@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // src/index.ts
-// cms-mcp v0.4.0 entry point.
-// Wires all tools, resources, circuit breaker, vector cache, schema cache,
-// OpenAPI discovery, webhook server, approval gate, and stdio transport.
+// cms-mcp v0.5.0 entry point.
 //
-// v0.4.0: Generic tool factory replaces hardcoded projects/blogs tools.
-// All configured endpoints now get CRUD tools auto-generated from live
-// schema introspection — any CMS field structure supported out of the box.
+// v0.5.0 changes:
+//   - 3-tool model per endpoint: list_X, get_X, mutate_X
+//   - v0.4 tool aliases kept as deprecated wrappers (removed in v0.6)
+//   - Relation hints auto-detected from FK field patterns
+//   - OpenAPI YAML spec support (js-yaml)
+//   - `npx cms-mcp init` command for first-run setup
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -28,18 +29,38 @@ import { registerMediaTools } from "./tools/media.js";
 import { registerGitHubTools } from "./tools/github.js";
 import { registerIntrospectTools } from "./tools/introspect.js";
 import { registerSearchTools } from "./tools/search.js";
+import { runInit } from "./cli/init.js";
 
 // ─── Parse CLI flags ──────────────────────────────────────────────────────────
 
-const args = process.argv.slice(2);
-const readOnlyFlag   = args.includes("--readonly") || args.includes("--read-only");
-const webhookFlag    = args.includes("--webhook");
-const noDiscoverFlag = args.includes("--no-discover");
-const approvalFlag   = args.includes("--approval");
+const argv = process.argv.slice(2);
+
+// `npx cms-mcp init` — run setup wizard and exit
+if (argv[0] === "init") {
+  const configIdx  = argv.findIndex((a) => a === "--config" || a === "-c");
+  const baseUrlIdx = argv.findIndex((a) => a === "--base-url" || a === "-u");
+  runInit({
+    config:  configIdx  !== -1 ? argv[configIdx  + 1] : undefined,
+    baseUrl: baseUrlIdx !== -1 ? argv[baseUrlIdx + 1] : argv[1] && !argv[1].startsWith("-") ? argv[1] : undefined,
+  }).catch((err: unknown) => {
+    process.stderr.write(`[cms-mcp] init error: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+} else {
+  main().catch((err: unknown) => {
+    process.stderr.write(`[cms-mcp] Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}
+
+const readOnlyFlag   = argv.includes("--readonly") || argv.includes("--read-only");
+const webhookFlag    = argv.includes("--webhook");
+const noDiscoverFlag = argv.includes("--no-discover");
+const approvalFlag   = argv.includes("--approval");
 
 const configFlag = (() => {
-  const idx = args.findIndex((a) => a === "--config" || a === "-c");
-  return idx !== -1 ? args[idx + 1] : undefined;
+  const idx = argv.findIndex((a) => a === "--config" || a === "-c");
+  return idx !== -1 ? argv[idx + 1] : undefined;
 })();
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
@@ -60,6 +81,7 @@ async function main() {
     config = loadConfig(explicitConfigPath);
   } catch (err: unknown) {
     process.stderr.write(`[cms-mcp] Config error: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(`[cms-mcp] Tip: Run \`npx cms-mcp init --base-url <url>\` to generate a starter config.\n`);
     process.exit(1);
   }
   if (readOnlyFlag) config.readOnly = true;
@@ -85,14 +107,14 @@ async function main() {
     ? createOpenAIEmbedFn(config.embedding.apiKey, config.embedding.model)
     : undefined;
 
-  // ── Vector Cache (Semantic Search) ─────────────────────────────────────────
+  // ── Vector Cache (Semantic Search — optional) ───────────────────────────────
   let vectorCache: VectorCache | undefined;
   if (config.schemaCache) {
     const vectorPath = config.schemaCache.path.replace(/\.db$/, "-vectors.db");
     vectorCache = new VectorCache(vectorPath, embedFn);
   }
 
-  // ── Approval Gate (Human-in-the-loop) ─────────────────────────────────────
+  // ── Approval Gate (optional) ───────────────────────────────────────────────
   let gate: ApprovalGate | null = null;
   if (approvalFlag || config.approvals) {
     const port      = config.approvals?.port ?? 2323;
@@ -102,7 +124,8 @@ async function main() {
       await gate.start();
     } catch (err) {
       process.stderr.write(
-        `  [approval-gate] Failed to start: ${err instanceof Error ? err.message : String(err)}\n` +
+        `  [approval-gate] Failed to start on port ${config.approvals?.port ?? 2323}: ` +
+        `${err instanceof Error ? err.message : String(err)}\n` +
         `  [approval-gate] Continuing without approval gate.\n\n`,
       );
       gate = null;
@@ -111,64 +134,72 @@ async function main() {
 
   // ── MCP Server ─────────────────────────────────────────────────────────────
   const server = new McpServer({
-    name: "cms-mcp",
-    version: "0.4.0",
+    name:    "cms-mcp",
+    version: "0.5.0",
     description:
-      "Universal agentic CMS server — manage any REST resource through Claude. " +
-      "Tools are auto-generated at startup from live schema introspection, so any " +
-      "CMS field structure is supported out of the box. Supports semantic search, " +
-      "OpenAPI discovery, policy enforcement, GitHub sync, and human-in-the-loop approval gates.",
+      "Universal CMS bridge for any REST API. 3 schema-driven tools per endpoint " +
+      "(list, get, mutate), built from OpenAPI spec or live introspection. " +
+      "Supports policies, approval gates, semantic search, and GitHub sync as optional plugins.",
   });
 
-  // ── Register MCP Resources ─────────────────────────────────────────────────
+  // ── MCP Resources ──────────────────────────────────────────────────────────
   registerResources(server, config, vectorCache);
 
-  // ── Generic resource tools (schema-driven, one per configured endpoint) ────
-  // Introspects each endpoint, builds Zod shapes from live field types,
-  // and registers list/get/create/update/delete tools — all before transport connects.
+  // ── Generic resource tools (schema-driven, 3 per endpoint) ─────────────────
   const introspectSummary = await introspectAndRegisterAll(server, config, audit, gate, schemaCache);
 
-  // ── Special-purpose tools (media, GitHub, search, introspection meta) ──────
+  // ── Always-on tools ────────────────────────────────────────────────────────
   registerMediaTools(server, config, audit);
-  registerGitHubTools(server, config, audit);
   registerIntrospectTools(server, config, audit, schemaCache);
-  registerSearchTools(server, config, audit, vectorCache, breaker);
+
+  // ── Optional plugin tools (registered only when config block present) ───────
+  if (config.github) {
+    registerGitHubTools(server, config, audit);
+  }
+  if (config.schemaCache) {
+    registerSearchTools(server, config, audit, vectorCache, breaker);
+  }
 
   // ── Startup Banner ─────────────────────────────────────────────────────────
   const mode = config.readOnly ? " [READ-ONLY]" : "";
-  const features: string[] = [];
-  if (schemaCache)            features.push("schema-cache");
-  if (vectorCache && embedFn) features.push("openai-embeddings");
-  else if (vectorCache)       features.push("vector-search");
-  if (config.policies)        features.push("policies");
-  if (gate)                   features.push("approval-gate");
-  if (config.webhook)         features.push("webhook-ready");
+  const plugins: string[] = [];
+  if (schemaCache)            plugins.push("schema-cache");
+  if (vectorCache && embedFn) plugins.push("openai-embeddings");
+  else if (vectorCache)       plugins.push("tfidf-search");
+  if (config.policies)        plugins.push("policies");
+  if (gate)                   plugins.push("approval-gate");
+  if (config.webhook)         plugins.push("webhook");
+  if (config.github)          plugins.push("github");
 
   process.stderr.write(`\n`);
   process.stderr.write(`  ┌──────────────────────────────────────┐\n`);
-  process.stderr.write(`  │  cms-mcp v0.4.0${mode.padEnd(21)}│\n`);
+  process.stderr.write(`  │  cms-mcp v0.5.0${mode.padEnd(21)}│\n`);
   process.stderr.write(`  └──────────────────────────────────────┘\n`);
   process.stderr.write(`  Base URL:  ${config.baseUrl}\n`);
-  if (features.length > 0)
-    process.stderr.write(`  Features:  ${features.join(", ")}\n`);
+  if (plugins.length > 0)
+    process.stderr.write(`  Plugins:   ${plugins.join(", ")}\n`);
   if (gate)
     process.stderr.write(`  Approvals: http://127.0.0.1:${config.approvals?.port ?? 2323}\n`);
   if (config.auditLog)
     process.stderr.write(`  Audit log: ${config.auditLog}\n`);
 
-  // Resource summary
-  if (introspectSummary.registered.length > 0)
-    process.stderr.write(`  Resources: ${introspectSummary.registered.join(", ")} (schema-driven)\n`);
+  // Per-endpoint schema tier summary
+  if (introspectSummary.fromOpenApi.length > 0)
+    process.stderr.write(`  OpenAPI:   ${introspectSummary.fromOpenApi.join(", ")} (spec-sourced)\n`);
+  if (introspectSummary.registered.filter((k) => !introspectSummary.fromOpenApi.includes(k)).length > 0) {
+    const sampled = introspectSummary.registered.filter((k) => !introspectSummary.fromOpenApi.includes(k));
+    process.stderr.write(`  Sampled:   ${sampled.join(", ")} (live introspection)\n`);
+  }
   if (introspectSummary.coldStart.length > 0)
-    process.stderr.write(`  Cold-start: ${introspectSummary.coldStart.join(", ")} (no records yet — passthrough mode)\n`);
+    process.stderr.write(`  Cold-start:${introspectSummary.coldStart.join(", ")} (passthrough mode)\n`);
   if (introspectSummary.failed.length > 0)
     process.stderr.write(`  Failed:    ${introspectSummary.failed.join(", ")} (tools not registered)\n`);
   if (introspectSummary.skipped.length > 0)
-    process.stderr.write(`  Skipped:   ${introspectSummary.skipped.join(", ")} (reserved or no URL)\n`);
+    process.stderr.write(`  Skipped:   ${introspectSummary.skipped.join(", ")} (reserved)\n`);
 
   process.stderr.write(`\n`);
 
-  // ── OpenAPI Auto-Discovery ─────────────────────────────────────────────────
+  // ── OpenAPI Auto-Discovery (background) ────────────────────────────────────
   if (!noDiscoverFlag && config.openapi?.autoDiscover !== false) {
     const cacheKey = openApiCacheKey(config.baseUrl);
     const cached = schemaCache?.get(cacheKey);
@@ -177,8 +208,8 @@ async function main() {
       discoverOpenApi(config.baseUrl, config.openapi?.discoveryUrl).then((result) => {
         if (result) {
           process.stderr.write(
-            `  [discovery] Found: ${result.title} (${result.rawPathCount} paths)\n` +
-            `  [discovery] Resources: ${result.resources.map((r) => r.name).join(", ") || "none detected"}\n\n`,
+            `  [discovery] Found: ${result.title} (${result.rawPathCount} paths, ` +
+            `${result.resources.length} resources)\n\n`,
           );
           schemaCache?.set(cacheKey, result);
         }
@@ -217,8 +248,3 @@ async function main() {
   await server.connect(transport);
   process.stderr.write("  [ready] Waiting for MCP messages.\n\n");
 }
-
-main().catch((err: unknown) => {
-  process.stderr.write(`[cms-mcp] Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
-  process.exit(1);
-});

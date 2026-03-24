@@ -26,6 +26,19 @@ export interface FieldDefinition {
 }
 
 /**
+ * A detected foreign-key relationship between two endpoints.
+ * Used to surface helpful hints in list/get tool descriptions.
+ */
+export interface RelationHint {
+  /** The field name on this resource that is a FK (e.g. "author_id"). */
+  field: string;
+  /** The config endpoint key this FK likely points to (e.g. "authors"). */
+  targetKey: string;
+  /** "one" = single FK like author_id; "many" = array FK like tag_ids. */
+  cardinality: "one" | "many";
+}
+
+/**
  * A machine-readable description of a CMS resource endpoint, built from
  * live API samples and cached in SQLite. Used by the generic tool factory
  * to build correct Zod shapes and display summaries at startup.
@@ -43,6 +56,8 @@ export interface ResourceSchema {
   titleField?: string;
   /** Name of the status/state enum field if found. */
   statusField?: string;
+  /** Detected foreign-key relationships to other configured endpoints. */
+  relationHints?: RelationHint[];
   /** Unix timestamp (ms) when the schema was last sampled. */
   sampledAt: number;
   /** How many records were used to build this schema. */
@@ -116,11 +131,12 @@ const EXCLUDE_FROM_CREATE = new Set([
  * Modes:
  * - "create"  — writable fields only; required fields have .min(1) or no .optional()
  * - "update"  — all fields optional + id required
+ * - "mutate"  — all writable fields optional (used as the `data` param in mutate_X)
  * - "list"    — limit + search + any enum-typed status fields as optional filters
  */
 export function buildZodShape(
   fields: FieldDefinition[],
-  mode: "create" | "update" | "list",
+  mode: "create" | "update" | "mutate" | "list",
 ): Record<string, z.ZodTypeAny> {
   const shape: Record<string, z.ZodTypeAny> = {};
 
@@ -146,6 +162,16 @@ export function buildZodShape(
     shape["id"] = z.string().min(1).describe("Record ID to update");
     for (const f of fields) {
       if (f.name === "id" || f.name === "_id") continue;
+      shape[f.name] = inferredTypeToZod(f.type).optional().describe(`${f.name} (${f.type})`);
+    }
+    return shape;
+  }
+
+  if (mode === "mutate") {
+    // All writable fields optional — used as the `data` object inside mutate_X
+    for (const f of fields) {
+      if (EXCLUDE_FROM_CREATE.has(f.name)) continue;
+      if (baseType(f.type) === "uuid" && f.alwaysPresent) continue;
       shape[f.name] = inferredTypeToZod(f.type).optional().describe(`${f.name} (${f.type})`);
     }
     return shape;

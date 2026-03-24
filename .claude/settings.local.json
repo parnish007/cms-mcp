@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(wc -l /c/Users/AB/Desktop/Projects/cms-mcp/src/tools/*.ts /c/Users/AB/Desktop/Projects/cms-mcp/src/lib/*.ts)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(npm install:*)",
+      "Bash(npm test:*)"
     ]
   }
 }
