@@ -1,49 +1,62 @@
 # Roadmap
 
-## Implemented (v0.2.0)
+## Implemented (v0.5.0 — current)
 
 ### Core
-- [x] Zod validation firewall on all tool inputs
+- [x] 3 tools per endpoint: `list_X`, `get_X`, `mutate_X` — small, predictable tool surface
+- [x] `mutate_X` covers create / update / delete / preview with `action` param
+- [x] Zod validation firewall on all tool inputs (dynamic shapes built at startup)
 - [x] Atomic transactions with rollback on write failures
-- [x] Binary media proxy with MIME detection from magic bytes
-- [x] Diff preview engine — field-level change tables before writes
-- [x] 23 MCP tools (Projects, Blogs, Media, GitHub, Introspection, Search)
-- [x] Read-only mode
+- [x] Diff preview engine — field-level change tables before any API call
+- [x] Read-only mode (`--readonly`)
 - [x] Audit logging with recursive secret redaction
 
+### Schema
+- [x] 4-tier schema resolution: cache → OpenAPI (JSON/YAML) → sampling → cold-start passthrough
+- [x] OpenAPI 3.x + Swagger 2.x parsing — `$ref` resolution, `oneOf`/`anyOf`/`allOf`, `readOnly` exclusion
+- [x] OpenAPI YAML support via `js-yaml` — `.yaml`/`.yml` URLs parsed natively
+- [x] Relation hints — FK fields (`author_id`, `tag_ids`) auto-detected and surfaced in tool descriptions
+- [x] SQLite schema cache with TTL-based invalidation — instant restarts after first run
+- [x] `refresh_resource_schema` — on-demand schema refresh per endpoint
+- [x] `list_configured_endpoints` — endpoint table with cache tier status
+
+### Developer Experience
+- [x] `npx cms-mcp init --base-url <url>` — detects CMS type, writes starter config in seconds
+- [x] v0.4 backward-compat aliases (`create_X`, `update_X`, `delete_X`) forwarding to `mutate_X`
+- [x] Plugin-conditional tool registration (GitHub, search only registered when configured)
+- [x] 78 unit tests across 6 test suites — Node native test runner, no Jest/Vitest
+- [x] Docker + docker-compose support
+
 ### Security
-- [x] SSRF protection — blocks private IPs, loopback, link-local, AWS metadata
+- [x] SSRF protection — private IPs (RFC 1918), loopback, link-local, AWS metadata, IPv6 ULA blocked
 - [x] 30-second request timeouts on all outbound calls
 - [x] 50 MB media upload cap
 - [x] No redirect following (`redirect: "error"`)
 - [x] HMAC-SHA256 webhook signature verification
-- [x] GitHub owner/repo name validation against character allowlists
+- [x] Approval gate — human click required before any write executes
 
-### Advanced Features
-- [x] OpenAPI/Swagger auto-discovery — scans for spec, suggests endpoint config
+### Optional Plugins
+- [x] OpenAPI auto-discovery — scans API for spec, suggests endpoint config
 - [x] Policy engine — 10 rule types, governance layer for teams
 - [x] GitHub webhook listener — auto-creates shadow drafts on push
-- [x] SQLite schema cache with TTL-based invalidation
-- [x] Semantic vector search — local TF-IDF, cosine similarity, zero API calls
-- [x] MCP Resources — `cms://projects/{id}`, `cms://blogs/{id}`
+- [x] Semantic vector search — local TF-IDF and OpenAI embeddings, cosine similarity
+- [x] MCP Resources — `cms://X/{id}` per endpoint, HTML distilled to Markdown
 - [x] Circuit breaker — graceful degradation when CMS API is down
 - [x] Content distillation — HTML→Markdown, junk field stripping, metadata headers
-
-### Developer Experience
-- [x] 76 unit tests across 6 test suites
-- [x] Docker + docker-compose support
-- [x] Full documentation (getting-started, configuration, tools, advanced)
-- [x] Example configs for Next.js + Supabase
+- [x] Binary media proxy — MIME detection, Cloudinary/S3 compatible
 
 ---
 
 ## Phase 2 (Planned)
 
-### Visual Diff Previews
-Use Playwright to take headless screenshots of your CMS's preview URL. When `preview_update_project` is called, snap a before/after screenshot and send the image to Claude.
+### Schema drift detection
+Automatically detect when your CMS schema has changed (new fields, removed fields, type changes) and alert Claude. Run `refresh_resource_schema` automatically on a configurable schedule.
 
-### Embedding-Based Vector Search
-Replace TF-IDF with real embeddings from OpenAI, Cohere, or local models (sentence-transformers). Higher accuracy for semantic matching. Configurable: `embedding.provider: "openai" | "local"`.
+### OpenAI Structured Outputs
+Use OpenAI's structured outputs mode to generate create/update payloads that are guaranteed to conform to the exact Zod schema of each endpoint — zero hallucinated fields.
+
+### Visual diff previews
+Use Playwright to take headless screenshots of your CMS preview URL. When `mutate_X` is called with `action: "preview"`, snap a before/after screenshot and send the image to Claude.
 
 ### Vault / Secrets Manager
 Enterprise-grade secret resolution:
@@ -52,38 +65,35 @@ Enterprise-grade secret resolution:
 { "token": "aws-ssm:/cms-mcp/api-token" }
 ```
 
-### AST-Based GitHub Scanning
+### AST-based GitHub scanning
 Instead of regex-matching README keywords, parse `package.json` dependency trees, Python `import` statements, and Go `go.mod` files to detect actual technology usage.
-
-### Cloudinary / S3 / Vercel Blob Optimization
-Auto-convert uploaded images to WebP, resize to standard dimensions, generate thumbnails. Integrate directly with cloud storage APIs instead of proxying through the CMS.
 
 ---
 
 ## Phase 3 (Future)
 
-### Multi-Tenant Support
+### Multi-tenant support
 Manage multiple sites from one cms-mcp instance:
 ```json
 {
   "sites": {
     "portfolio": { "baseUrl": "...", "endpoints": {...} },
-    "blog": { "baseUrl": "...", "endpoints": {...} }
+    "blog":      { "baseUrl": "...", "endpoints": {...} }
   }
 }
 ```
 
-### Scheduled Publishing
+### Scheduled publishing
 `schedule_publish` tool — set a future date, cms-mcp publishes automatically.
 
-### Content Versioning
-Track revision history locally. Roll back to any previous version of a project or blog post.
+### Pagination cursor abstraction
+Transparent multi-page iteration: `list_X({ all: true })` fetches all pages, streams results back to Claude in batches to avoid context overflow.
 
-### MCP Resource Subscriptions
-Push `notifications/resources/updated` when CMS content changes. Requires a polling background worker or webhook integration.
+### MCP Resource subscriptions
+Push `notifications/resources/updated` when CMS content changes — requires a polling background worker or webhook integration.
 
-### Sampling / Context Window Management
-When a query returns 50+ results, use MCP sampling to ask Claude: "Based on our conversation, which 5 results are most relevant?" Prevents context window overflow.
+### Production hardening
+Rate limiting, Docker image <50 MB target, MCP registry submission.
 
 ---
 

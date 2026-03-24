@@ -13,7 +13,7 @@
 
 Write blog posts, manage projects, upload media, search content semantically, enforce publishing policies, and require human approval before anything goes live — all through natural language with Claude.
 
-**v0.4.0: Tools are now auto-generated from your live CMS schema — any field structure, any endpoint name, zero code changes.**
+**v0.5.0: 3 tools per endpoint (`list_X`, `get_X`, `mutate_X`) — auto-generated from OpenAPI spec or live schema introspection, with relation hints and first-run `init` wizard.**
 
 </div>
 
@@ -259,7 +259,7 @@ claude mcp add cms-mcp -- npx cms-mcp --config ./cms-mcp.config.json
   "approvals": {
     "port":      2323,
     "timeoutMs": 300000,
-    "tools":     ["publish_posts", "delete_posts", "delete_products"]
+    "tools":     ["mutate_posts", "mutate_products"]
   },
 
   "openapi": {
@@ -496,18 +496,18 @@ Enforce publishing standards with `cms-mcp.policies.json`:
     {
       "type": "required_fields",
       "fields": ["cover_image", "seo_title", "seo_description"],
-      "tools": ["publish_posts"]
+      "tools": ["mutate_posts"]
     },
     {
       "type": "forbidden_words",
       "fields": ["title", "body"],
       "words": ["TODO", "lorem ipsum"],
-      "tools": ["create_posts", "update_posts", "publish_posts"]
+      "tools": ["mutate_posts"]
     },
     {
       "type": "min_tags",
       "min": 2,
-      "tools": ["publish_posts"]
+      "tools": ["mutate_posts"]
     }
   ]
 }
@@ -610,7 +610,6 @@ Multi-stage build — compiled JS + production deps only (~80MB image).
 | **PATCH only for updates** | `update_X` always sends `PATCH`. APIs that require `PUT` will reject it | Map the endpoint to a custom wrapper that converts PATCH→PUT |
 | **No nested/relational writes** | Create tools only write top-level fields — no deep nested objects or join-table writes | Post top-level records, then use secondary tools for relations |
 | **Sampling misses rare fields** | Tier-3 sampling fetches 5 records — optional fields absent in all 5 are not included | Use OpenAPI spec (Tier 2) or add `discover_api` + `refresh_resource_schema` after adding records |
-| **OpenAPI YAML not parsed** | YAML specs are detected but not parsed — only JSON specs are used | Convert your spec to JSON (`swagger-cli bundle --type json`) or set `openapi.discoveryUrl` to the JSON endpoint |
 | **No pagination abstraction** | `list_X` fetches a single page — no cursor iteration across all pages | Pass `limit`/`page` args manually; or sync all content with `sync_all_content` |
 | **`media` key is reserved** | The key `"media"` always routes to the dedicated upload handler | Name your media endpoint `"media"` — it gets file upload tools automatically |
 | **Single base URL** | All endpoints share one `baseUrl` + auth config | Run a second cms-mcp instance for a second API |
@@ -618,56 +617,11 @@ Multi-stage build — compiled JS + production deps only (~80MB image).
 
 ---
 
-## Migration from v0.3.x
+## Migration
 
-### What changed
+See [docs/migration-v0.5.md](./docs/migration-v0.5.md) for upgrading from v0.4 to v0.5.
 
-| v0.3.x | v0.4.0 |
-|--------|--------|
-| `list_projects`, `create_project`, etc. | `list_projects`, `create_projects` — key-based naming |
-| `list_blogs`, `create_blog`, etc. | `list_blogs`, `create_blogs` — key-based naming |
-| Fixed fields (hardcoded Zod schemas) | Dynamic fields (inferred from your live API) |
-| `endpoints.projects` / `endpoints.blogs` only | Any endpoint key supported |
-| Schema inspector output was markdown only | Machine-readable `ResourceSchema` + markdown report |
-
-### Config change
-
-Your existing config still works. The only change is `endpoints` now accepts any key:
-
-```json
-{
-  "endpoints": {
-    "projects": "/projects",
-    "blogs":    "/posts",
-    "media":    "/uploads"
-  }
-}
-```
-
-This generates tools: `list_projects`, `list_blogs`, etc. — same names as before, now schema-driven.
-
-### Tool name change
-
-| Old | New |
-|-----|-----|
-| `create_project` | `create_projects` |
-| `update_project` | `update_projects` |
-| `delete_project` | `delete_projects` |
-| `publish_project` | Use `update_projects` with `status: "published"` |
-| `create_blog` | `create_blogs` |
-| `publish_blog` | Use `update_blogs` with `status: "published"` |
-| `unpublish_blog` | Use `update_blogs` with `status: "draft"` |
-
-If you want the old singular names, set your endpoint key to the singular form:
-```json
-{ "endpoints": { "project": "/projects", "blog": "/posts" } }
-```
-
-This generates `list_project`, `create_project`, etc.
-
-### Approval gate tool names
-
-If you had `"tools": ["publish_project", "delete_blog"]` in your `approvals` config, update them to match the new tool names (`delete_projects`, `delete_blogs`, etc.).
+See [docs/migration-v0.4.md](./docs/migration-v0.4.md) for upgrading from v0.3.x to v0.4.
 
 ---
 
@@ -689,7 +643,8 @@ If you had `"tools": ["publish_project", "delete_blog"]` in your `approvals` con
 | [Circuit Breaker](./docs/advanced/circuit-breaker.md) | API failure handling |
 | [Content Distillation](./docs/advanced/content-distillation.md) | HTML→Markdown |
 | [Security Guide](./docs/security.md) | Operator reference |
-| [Migration Guide](./docs/migration-v0.4.md) | Upgrading from v0.3.x |
+| [Migration v0.5](./docs/migration-v0.5.md) | Upgrading from v0.4 to v0.5 |
+| [Migration v0.4](./docs/migration-v0.4.md) | Upgrading from v0.3.x to v0.4 |
 
 ---
 

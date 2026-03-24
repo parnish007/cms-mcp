@@ -280,7 +280,7 @@ To expose a new Supabase table through the CMS bridge:
 }
 ```
 
-4. Restart Claude Desktop / Claude Code to pick up the new endpoint.
+4. Restart Claude Desktop / Claude Code to pick up the new endpoint. cms-mcp will register `list_yourTable`, `get_yourTable`, and `mutate_yourTable` automatically.
 
 The bridge routes follow a consistent pattern:
 - Auth check at the top using `isAuthorized(request)`
@@ -297,5 +297,5 @@ The bridge routes follow a consistent pattern:
 - The `SUPABASE_SERVICE_ROLE_KEY` bypasses Row Level Security. The bridge routes are protected only by `ADMIN_API_SECRET` — keep it secret and use a strong value.
 - The `ADMIN_API_SECRET` should be at least 32 random hex characters. Generate one with: `openssl rand -hex 32`
 - In production, ensure the `/api/cms/*` routes are only accessible over HTTPS.
-- The approval gate (`approvals.enabled: true` in the config) requires a human to confirm destructive operations in the cms-mcp UI before they execute.
+- The approval gate (`approvals` config block, or `--approval` CLI flag) requires a human to confirm write operations in the cms-mcp UI before they execute. Gate specific endpoints with `"tools": ["mutate_projects", "mutate_blogs"]`.
 - Audit logs are written to `~/.cms-mcp/portfolio-audit.ndjson` by default — review them periodically.

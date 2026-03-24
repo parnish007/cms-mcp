@@ -22,42 +22,58 @@ Verify the install:
 
 ```bash
 cms-mcp --version
-# cms-mcp 0.1.0
+# cms-mcp 0.5.0
 ```
 
 ---
 
 ## Step 2 — Create your config file
 
+**Option A — Auto-detect your CMS (recommended):**
+
+```bash
+npx cms-mcp init --base-url https://your-api.com/api
+```
+
+This probes your API for Supabase, Strapi, Directus, PocketBase, and Payload CMS signatures, then writes a starter `cms-mcp.config.json` with the correct auth type and common endpoint paths.
+
+**Option B — Write it manually:**
+
 Create `cms-mcp.config.json` in your project root (or your home directory — see [Config search order](./configuration.md#config-file-search-order)):
 
 ```json
 {
   "name": "My Portfolio",
-  "baseUrl": "https://my-portfolio.vercel.app",
+  "baseUrl": "https://my-portfolio.vercel.app/api",
   "auth": {
     "type": "bearer",
     "token": "env:CMS_API_TOKEN"
   },
   "endpoints": {
-    "projects": "https://my-portfolio.vercel.app/api/projects",
-    "blogs": "https://my-portfolio.vercel.app/api/blogs",
-    "media": "https://my-portfolio.vercel.app/api/media"
+    "projects": "/projects",
+    "posts":    "/posts",
+    "media":    "/media"
   },
-  "github": {
-    "token": "env:GITHUB_TOKEN",
-    "defaultOwner": "your-github-username"
-  },
-  "readOnly": false,
+  "schemaCache": { "path": "~/.cms-mcp/schema-cache.db", "ttlMinutes": 60 },
   "auditLog": "~/.cms-mcp/audit.log"
 }
 ```
+
+Any endpoint key works. At startup, cms-mcp registers `list_projects`, `get_projects`, `mutate_projects`, `list_posts`, `get_posts`, `mutate_posts`, etc. — tool shapes built from your API's actual fields.
 
 The `env:` prefix means the value is read from an environment variable at runtime — never hardcoded into the file.
 
 ---
 
-## Step 3 — Connect to Claude Desktop
+## Step 3 — Set environment variables
+
+```bash
+export CMS_API_TOKEN=your-api-token-here
+```
+
+---
+
+## Step 4 — Connect to Claude Desktop
 
 Open your Claude Desktop config file:
 
@@ -75,8 +91,7 @@ Add the `cms-mcp` server entry:
     "cms-mcp": {
       "command": "cms-mcp",
       "env": {
-        "CMS_API_TOKEN": "your-actual-api-token-here",
-        "GITHUB_TOKEN": "ghp_your_github_pat_here"
+        "CMS_API_TOKEN": "your-actual-api-token-here"
       }
     }
   }
@@ -87,7 +102,7 @@ Restart Claude Desktop. You should see a hammer icon in the chat input — click
 
 ---
 
-## Step 4 — Connect to Claude Code CLI
+## Step 5 — Connect to Claude Code CLI
 
 Add the server to your Claude Code project config at `.claude/settings.json`:
 
@@ -97,42 +112,39 @@ Add the server to your Claude Code project config at `.claude/settings.json`:
     "cms-mcp": {
       "command": "cms-mcp",
       "env": {
-        "CMS_API_TOKEN": "your-actual-api-token-here",
-        "GITHUB_TOKEN": "ghp_your_github_pat_here"
+        "CMS_API_TOKEN": "your-actual-api-token-here"
       }
     }
   }
 }
 ```
 
-Or pass it inline when starting a session:
+Or add it from the command line:
 
 ```bash
-claude --mcp-server cms-mcp="cms-mcp" \
-  --env CMS_API_TOKEN=your-token \
-  --env GITHUB_TOKEN=ghp_your_pat
+claude mcp add cms-mcp -- npx cms-mcp --config ./cms-mcp.config.json
 ```
 
 Verify the tools loaded:
 
 ```bash
 claude mcp list
-# cms-mcp  ● connected  (20 tools)
+# cms-mcp  ● connected  (9 tools)
 ```
 
 ---
 
-## Step 5 — First conversations
+## Step 6 — First conversations
 
 Once connected, you can talk to Claude naturally. Here are examples to try immediately.
 
 ### List everything
 
 ```
-You: What blog posts do I have?
+You: What posts do I have?
 
-Claude: I'll check your blog posts now.
-[calls list_blogs]
+Claude: I'll check your posts now.
+[calls list_posts]
 
 Found 4 post(s):
 
@@ -150,7 +162,7 @@ You: Add a new project called "AI Image Generator" — it's a Next.js + OpenAI a
      Keep it as a draft for now.
 
 Claude: Let me preview that first.
-[calls preview_create_project]
+[calls mutate_projects({ action: "preview", data: { title: "AI Image Generator", ... } })]
 
 ## New Record Preview
 
@@ -167,7 +179,7 @@ Reply confirm to create, or cancel to abort.
 
 You: confirm
 
-Claude: [calls create_project with confirm: true]
+Claude: [calls mutate_projects({ action: "create", data: {...}, confirm: true })]
 ✅ Project created!
 ID: proj_9xkT3
 Title: AI Image Generator
@@ -184,13 +196,13 @@ Scanned repo. Detected: Next.js, TypeScript, OpenAI, Tailwind CSS, Vercel.
 Project "AI Image Generator" synced with tech stack and description. ID: proj_9xkT3
 ```
 
-### Publish a blog post
+### Publish a post
 
 ```
 You: Publish the "Getting Started with Supabase" draft.
 
-Claude: [calls get_blog to find it, then publish_blog]
-✅ Blog post ghi789 is now published.
+Claude: [calls get_posts to find it, then mutate_posts({ action: "update", id: "ghi789", data: { status: "published" }, confirm: true })]
+✅ Post ghi789 is now published.
 ```
 
 ---
@@ -205,11 +217,14 @@ Claude: [calls get_blog to find it, then publish_blog]
 
 **API auth errors (401/403)** — Check that your token in the `env` block is correct and hasn't expired.
 
+**Cold-start tools (passthrough mode)** — If your endpoint has no records yet, tools register in passthrough mode. Create one record in your CMS, then ask Claude: "Refresh the schema for X."
+
 ---
 
 ## Next steps
 
 - [Full configuration reference](./configuration.md)
-- [Project tools reference](./tools/projects.md)
-- [Blog tools reference](./tools/blogs.md)
+- [Generic resource tools](./tools/generic-resource.md)
+- [Introspection tools](./tools/introspection.md)
 - [Security guide](./security.md)
+- [Migration from v0.4](./migration-v0.5.md)
