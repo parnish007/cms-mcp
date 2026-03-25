@@ -1,93 +1,61 @@
 // src/lib/resource-schema.ts
-// Runtime ResourceSchema type and Zod shape builder.
-// This is the bridge between live endpoint introspection and MCP tool registration.
-// Instead of hardcoded Zod schemas for "blogs" and "projects", every resource
-// gets its own schema built at startup from whatever fields actually exist in
-// the live CMS API — enabling cms-mcp to work with ANY REST CMS out of the box.
+// v1.0.0 — Runtime ResourceSchema type and Zod shape builder.
+//
+// Changes from v0.5.0:
+//   - FieldDefinition gains `inconsistent?: boolean` flag (from schema merging)
+//   - buildZodShape respects `inconsistent`: always uses .optional() for
+//     fields not present in all sampled records
+//   - buildPassthroughShape extended with "delete" mode
 
 import { z } from "zod";
 import { baseType } from "./type-inference.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-/** A single inferred field from a live CMS record. */
 export interface FieldDefinition {
   name: string;
-  /** Semantic type produced by inferType(): uuid, date, url, email, slug,
-   *  string, number, boolean, array, object, null, mixed, enum(a|b|c),
-   *  or any of the above with a trailing "?" for nullable. */
+  /**
+   * Semantic type: uuid, date, url, email, slug, string, number, boolean,
+   * array, object, null, mixed, enum(a|b|c).
+   */
   type: string;
-  /** True if the field was null/undefined in at least one sample. */
   nullable: boolean;
-  /** True if the field was present and non-null in EVERY sample. */
   alwaysPresent: boolean;
-  /** Short human-readable example value (truncated). */
+  /**
+   * v1.0.0: true when the field was absent in at least one sampled record.
+   * Inconsistent fields always use .optional() in Zod shapes regardless of mode.
+   */
+  inconsistent?: boolean;
   example: string;
 }
 
-/**
- * A detected foreign-key relationship between two endpoints.
- * Used to surface helpful hints in list/get tool descriptions.
- */
 export interface RelationHint {
-  /** The field name on this resource that is a FK (e.g. "author_id"). */
   field: string;
-  /** The config endpoint key this FK likely points to (e.g. "authors"). */
   targetKey: string;
-  /** "one" = single FK like author_id; "many" = array FK like tag_ids. */
   cardinality: "one" | "many";
 }
 
-/**
- * A machine-readable description of a CMS resource endpoint, built from
- * live API samples and cached in SQLite. Used by the generic tool factory
- * to build correct Zod shapes and display summaries at startup.
- */
 export interface ResourceSchema {
-  /** The endpoint key as written in cms-mcp.config.json (e.g. "blogs", "products"). */
   resourceKey: string;
-  /** Fully-resolved endpoint URL. */
   endpointUrl: string;
-  /** All fields discovered across up to 5 sample records. */
   fields: FieldDefinition[];
-  /** Name of the ID field ("id", "_id", or first uuid-typed field). */
   idField: string;
-  /** Name of the human-readable title field ("title", "name", etc.) if found. */
   titleField?: string;
-  /** Name of the status/state enum field if found. */
   statusField?: string;
-  /** Detected foreign-key relationships to other configured endpoints. */
   relationHints?: RelationHint[];
-  /** Unix timestamp (ms) when the schema was last sampled. */
   sampledAt: number;
-  /** How many records were used to build this schema. */
   recordCount: number;
-  /**
-   * Where this schema came from:
-   * - "live"        — freshly introspected from the CMS API
-   * - "cached"      — loaded from SQLite schema cache
-   * - "cold-start"  — endpoint returned zero records; tools use passthrough mode
-   */
   source: "live" | "cached" | "cold-start";
 }
 
 // ─── Cache key ────────────────────────────────────────────────────────────────
 
-/**
- * Produces the SQLite cache key for a given resource schema.
- * Namespaced separately from OpenAPI cache keys.
- */
 export function resourceSchemaCacheKey(baseUrl: string, resourceKey: string): string {
   return `resource-schema:${baseUrl}:${resourceKey}`;
 }
 
-// ─── Zod shape builder ────────────────────────────────────────────────────────
+// ─── Zod type mapping ─────────────────────────────────────────────────────────
 
-/**
- * Map an inferred type string to a Zod validator.
- * All validators are optional by default; the caller tightens required fields
- * based on mode and alwaysPresent.
- */
 function inferredTypeToZod(type: string): z.ZodTypeAny {
   const bt = baseType(type);
 
@@ -103,36 +71,33 @@ function inferredTypeToZod(type: string): z.ZodTypeAny {
 
   if (bt.startsWith("enum(")) {
     const raw = bt.slice(5, -1).split("|").map((s) => s.trim()).filter(Boolean);
-    if (raw.length >= 2) {
-      return z.enum(raw as [string, ...string[]]);
-    }
+    if (raw.length >= 2) return z.enum(raw as [string, ...string[]]);
     return z.string();
   }
 
   if (bt === "null" || bt === "mixed") return z.unknown();
-
-  // Default fallback — string
-  return z.string();
+  return z.string(); // default fallback
 }
 
-/**
- * Names of fields that are always system-managed and should be excluded from
- * create payloads (server generates them automatically).
- */
-const EXCLUDE_FROM_CREATE = new Set([
+// System-managed fields excluded from create payloads
+const EXCLUDE_FROM_WRITE = new Set([
   "id", "_id", "uuid",
   "created_at", "updated_at", "createdAt", "updatedAt",
   "deleted_at", "deletedAt",
 ]);
 
+// ─── buildZodShape ────────────────────────────────────────────────────────────
+
 /**
- * Build a Zod shape Record suitable for passing directly to server.tool().
+ * Build a Zod shape from a ResourceSchema's field definitions.
  *
  * Modes:
- * - "create"  — writable fields only; required fields have .min(1) or no .optional()
+ * - "create"  — writable fields; required if alwaysPresent && !nullable && !inconsistent
  * - "update"  — all fields optional + id required
- * - "mutate"  — all writable fields optional (used as the `data` param in mutate_X)
- * - "list"    — limit + search + any enum-typed status fields as optional filters
+ * - "mutate"  — all writable fields optional (legacy mutate_X data param)
+ * - "list"    — limit + search + enum filter fields
+ *
+ * v1.0.0: `inconsistent` fields always get .optional() regardless of mode.
  */
 export function buildZodShape(
   fields: FieldDefinition[],
@@ -141,10 +106,8 @@ export function buildZodShape(
   const shape: Record<string, z.ZodTypeAny> = {};
 
   if (mode === "list") {
-    shape["limit"]  = z.number().int().min(1).max(100).default(20).describe("Max records to return");
-    shape["search"] = z.string().optional().describe("Search query");
-
-    // Expose any enum-typed fields (especially status) as optional filters
+    shape["limit"]  = z.number().int().min(1).max(100).default(20);
+    shape["search"] = z.string().optional();
     for (const f of fields) {
       if (baseType(f.type).startsWith("enum(") && f.name !== "id") {
         const raw = baseType(f.type).slice(5, -1).split("|").map((s) => s.trim()).filter(Boolean);
@@ -158,67 +121,67 @@ export function buildZodShape(
   }
 
   if (mode === "update") {
-    // id is required; every other field is optional
     shape["id"] = z.string().min(1).describe("Record ID to update");
     for (const f of fields) {
       if (f.name === "id" || f.name === "_id") continue;
-      shape[f.name] = inferredTypeToZod(f.type).optional().describe(`${f.name} (${f.type})`);
+      shape[f.name] = inferredTypeToZod(f.type).optional()
+        .describe(`${f.name} (${f.type})${f.inconsistent ? " [optional — inconsistent across records]" : ""}`);
     }
     return shape;
   }
 
   if (mode === "mutate") {
-    // All writable fields optional — used as the `data` object inside mutate_X
     for (const f of fields) {
-      if (EXCLUDE_FROM_CREATE.has(f.name)) continue;
+      if (EXCLUDE_FROM_WRITE.has(f.name)) continue;
       if (baseType(f.type) === "uuid" && f.alwaysPresent) continue;
-      shape[f.name] = inferredTypeToZod(f.type).optional().describe(`${f.name} (${f.type})`);
+      shape[f.name] = inferredTypeToZod(f.type).optional()
+        .describe(`${f.name} (${f.type})`);
     }
     return shape;
   }
 
   // mode === "create"
   for (const f of fields) {
-    if (EXCLUDE_FROM_CREATE.has(f.name)) continue;
-    // Skip auto-id fields (uuid + alwaysPresent = server-generated)
+    if (EXCLUDE_FROM_WRITE.has(f.name)) continue;
     if (baseType(f.type) === "uuid" && f.alwaysPresent) continue;
 
     const base = inferredTypeToZod(f.type);
-    const isRequired = f.alwaysPresent && !f.nullable;
+
+    // v1.0.0: inconsistent fields are always optional (schema merging result)
+    const isRequired = f.alwaysPresent && !f.nullable && !f.inconsistent;
 
     if (isRequired) {
-      // Keep the validator as-is (required)
       shape[f.name] = base.describe(`${f.name} (${f.type}) — required`);
     } else {
-      shape[f.name] = base.optional().describe(`${f.name} (${f.type})`);
+      shape[f.name] = base.optional()
+        .describe(`${f.name} (${f.type})${f.inconsistent ? " [inconsistent — present in some records]" : ""}`);
     }
   }
 
   return shape;
 }
 
-/**
- * Build a passthrough shape for cold-start resources (zero records at introspection time).
- * Claude can still call the tool; it just won't have field-level hints.
- */
-export function buildPassthroughShape(mode: "create" | "update" | "list"): Record<string, z.ZodTypeAny> {
+// ─── buildPassthroughShape ───────────────────────────────────────────────────
+
+export function buildPassthroughShape(
+  mode: "create" | "update" | "mutate" | "list" | "delete",
+): Record<string, z.ZodTypeAny> {
   if (mode === "list") {
     return {
       limit:  z.number().int().min(1).max(100).default(20),
       search: z.string().optional(),
     };
   }
-  if (mode === "update") {
+  if (mode === "update" || mode === "delete") {
     return {
-      id:     z.string().min(1).describe("Record ID to update"),
-      fields: z.record(z.unknown()).describe("Fields to update as a key-value object"),
+      id:     z.string().min(1).describe("Record ID"),
+      fields: z.record(z.unknown()).optional().describe("Fields to update"),
     };
   }
-  // create
+  // create / mutate
   return {
     fields: z.record(z.unknown()).describe(
-      "Fields to create as a key-value object. " +
-      "Run inspect_endpoint_schema to discover available fields once records exist.",
+      "Fields as a key-value object. Run inspect_endpoint_schema once records exist.",
     ),
   };
 }

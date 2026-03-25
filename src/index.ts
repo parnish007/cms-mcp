@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 // src/index.ts
-// cms-mcp v0.5.0 entry point.
+// cms-mcp v1.0.0 entry point.
 //
-// v0.5.0 changes:
-//   - 3-tool model per endpoint: list_X, get_X, mutate_X
-//   - v0.4 tool aliases kept as deprecated wrappers (removed in v0.6)
-//   - Relation hints auto-detected from FK field patterns
-//   - OpenAPI YAML spec support (js-yaml)
-//   - `npx cms-mcp init` command for first-run setup
+// v1.0.0 changes:
+//   - 5-tool model per endpoint: list_X, get_X, create_X, update_X, delete_X
+//   - legacyMode: true keeps v0.5 mutate_X combined tool
+//   - CMSAdapter: per-endpoint fieldMap and updateMethod (PATCH/PUT)
+//   - SecretManager: secrets tokenized after loadConfig() — never plain-text
+//   - CompensatingTransaction: honest rollback with CriticalInconsistencyError
+//   - SSRF v2: explicit port whitelist, cloud metadata block, null-byte detection
+//   - Schema merging: 20-record sampling, inconsistent fields always .optional()
+//   - Full interactive `npx cms-mcp init` wizard (readline/promises)
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -59,7 +62,10 @@ const approvalFlag   = argv.includes("--approval");
 
 const configFlag = (() => {
   const idx = argv.findIndex((a) => a === "--config" || a === "-c");
-  return idx !== -1 ? argv[idx + 1] : undefined;
+  if (idx === -1) return undefined;
+  const next = argv[idx + 1];
+  // Guard: next token must exist and not be another flag
+  return next && !next.startsWith("-") ? next : undefined;
 })();
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
@@ -134,25 +140,30 @@ async function main() {
   // ── MCP Server ─────────────────────────────────────────────────────────────
   const server = new McpServer({
     name:    "cms-mcp",
-    version: "0.5.0",
+    version: "1.0.0",
     description:
-      "Universal CMS bridge for any REST API. 3 schema-driven tools per endpoint " +
-      "(list, get, mutate), built from OpenAPI spec or live introspection. " +
-      "Supports policies, approval gates, semantic search, and GitHub sync as optional plugins.",
+      "Universal CMS bridge for any REST API. 5 schema-driven tools per endpoint " +
+      "(list, get, create, update, delete), built from OpenAPI spec or 20-record live " +
+      "introspection with schema merging. CMSAdapter field mapping, SecretManager, " +
+      "CompensatingTransaction rollback, SSRF v2. Optional plugins: approval gate, " +
+      "policies, semantic search, GitHub sync.",
   });
 
   // ── MCP Resources ──────────────────────────────────────────────────────────
   registerResources(server, config, vectorCache);
 
-  // ── Generic resource tools (schema-driven, 3 per endpoint) ─────────────────
-  const introspectSummary = await introspectAndRegisterAll(server, config, audit, gate, schemaCache);
+  // ── Optional plugin tools (registered only when config block present) ───────
+  // Must run BEFORE introspectAndRegisterAll so the PolicyEngine can be passed
+  // to write tools during endpoint registration.
+  const pluginSummary = await loadPlugins(server, config, audit, { vectorCache, breaker });
+  const { policyEngine } = pluginSummary;
+
+  // ── Generic resource tools (schema-driven, 5 per endpoint) ──────────────────
+  const introspectSummary = await introspectAndRegisterAll(server, config, audit, gate, schemaCache, policyEngine);
 
   // ── Always-on tools ────────────────────────────────────────────────────────
   registerMediaTools(server, config, audit);
   registerIntrospectTools(server, config, audit, schemaCache);
-
-  // ── Optional plugin tools (registered only when config block present) ───────
-  const pluginSummary = await loadPlugins(server, config, audit, { vectorCache, breaker });
 
   // ── Startup Banner ─────────────────────────────────────────────────────────
   const mode = config.readOnly ? " [READ-ONLY]" : "";
@@ -165,7 +176,7 @@ async function main() {
 
   process.stderr.write(`\n`);
   process.stderr.write(`  ┌──────────────────────────────────────┐\n`);
-  process.stderr.write(`  │  cms-mcp v0.5.0${mode.padEnd(21)}│\n`);
+  process.stderr.write(`  │  cms-mcp v1.0.0${mode.padEnd(21)}│\n`);
   process.stderr.write(`  └──────────────────────────────────────┘\n`);
   process.stderr.write(`  Base URL:  ${config.baseUrl}\n`);
   if (plugins.length > 0)

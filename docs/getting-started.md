@@ -22,7 +22,7 @@ Verify the install:
 
 ```bash
 cms-mcp --version
-# cms-mcp 0.5.0
+# cms-mcp 1.0.0
 ```
 
 ---
@@ -35,7 +35,7 @@ cms-mcp --version
 npx cms-mcp init --base-url https://your-api.com/api
 ```
 
-This probes your API for Supabase, Strapi, Directus, PocketBase, and Payload CMS signatures, then writes a starter `cms-mcp.config.json` with the correct auth type and common endpoint paths.
+This opens an interactive wizard: it HEAD-probes your API, auto-detects Supabase, Strapi, Directus, PocketBase, and Payload CMS, then asks for auth type, endpoints, and optional features before writing `cms-mcp.config.json`.
 
 **Option B — Write it manually:**
 
@@ -59,7 +59,7 @@ Create `cms-mcp.config.json` in your project root (or your home directory — se
 }
 ```
 
-Any endpoint key works. At startup, cms-mcp registers `list_projects`, `get_projects`, `mutate_projects`, `list_posts`, `get_posts`, `mutate_posts`, etc. — tool shapes built from your API's actual fields.
+Any endpoint key works. At startup, cms-mcp registers `list_projects`, `get_projects`, `create_projects`, `update_projects`, `delete_projects`, `list_posts`, `get_posts`, `create_posts`, etc. — tool shapes built from your API's actual fields.
 
 The `env:` prefix means the value is read from an environment variable at runtime — never hardcoded into the file.
 
@@ -162,7 +162,8 @@ You: Add a new project called "AI Image Generator" — it's a Next.js + OpenAI a
      Keep it as a draft for now.
 
 Claude: Let me preview that first.
-[calls mutate_projects({ action: "preview", data: { title: "AI Image Generator", ... } })]
+[calls create_projects({ title: "AI Image Generator", tech_stack: "Next.js, OpenAI",
+  live_url: "https://ai-gen.vercel.app", status: "draft", preview: true })]
 
 ## New Record Preview
 
@@ -179,11 +180,11 @@ Reply confirm to create, or cancel to abort.
 
 You: confirm
 
-Claude: [calls mutate_projects({ action: "create", data: {...}, confirm: true })]
-✅ Project created!
+Claude: [calls create_projects({ ..., confirm: true })]
+✅ projects created!
 ID: proj_9xkT3
-Title: AI Image Generator
-Status: draft
+title: AI Image Generator
+status: draft
 ```
 
 ### Scan a GitHub repo and sync it as a project
@@ -201,8 +202,8 @@ Project "AI Image Generator" synced with tech stack and description. ID: proj_9x
 ```
 You: Publish the "Getting Started with Supabase" draft.
 
-Claude: [calls get_posts to find it, then mutate_posts({ action: "update", id: "ghi789", data: { status: "published" }, confirm: true })]
-✅ Post ghi789 is now published.
+Claude: [calls get_posts to find it, then update_posts({ id: "ghi789", status: "published", confirm: true })]
+✅ posts ghi789 updated.
 ```
 
 ---
@@ -227,4 +228,5 @@ Claude: [calls get_posts to find it, then mutate_posts({ action: "update", id: "
 - [Generic resource tools](./tools/generic-resource.md)
 - [Introspection tools](./tools/introspection.md)
 - [Security guide](./security.md)
+- [Migration from v0.5](./migration-v1.0.md)
 - [Migration from v0.4](./migration-v0.5.md)

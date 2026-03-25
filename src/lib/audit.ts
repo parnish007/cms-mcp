@@ -29,7 +29,7 @@ export class AuditLogger {
       } catch {
         // dir already exists
       }
-      console.error(`[cms-mcp] Audit log: ${this.path}`);
+      process.stderr.write(`[cms-mcp] Audit log: ${this.path}\n`);
     }
   }
 
@@ -41,13 +41,13 @@ export class AuditLogger {
       error: entry.error ? truncateError(entry.error) : undefined,
     });
 
-    console.error(`[audit] ${line}`);
+    process.stderr.write(`[audit] ${line}\n`);
 
     if (this.path) {
       try {
         appendFileSync(this.path, line + "\n", "utf-8");
       } catch (err) {
-        console.error(`[cms-mcp] Failed to write audit log: ${err}`);
+        process.stderr.write(`[cms-mcp] Failed to write audit log: ${err}\n`);
       }
     }
   }

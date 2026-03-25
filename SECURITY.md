@@ -52,7 +52,7 @@ Pass `--readonly` to disable all write tools at startup. Useful for read-access 
 
 Please **do not** open a public GitHub issue for security vulnerabilities.
 
-Email: [your-email@example.com]
+Email: [parnishklpo@gmail.com]
 
 Include:
 - A description of the vulnerability

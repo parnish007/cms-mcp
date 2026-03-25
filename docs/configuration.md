@@ -19,7 +19,7 @@ The first file found is used. If neither exists, the server exits with an error 
 
 ## Top-level fields
 
-### `name` (required)
+### `name` (optional)
 
 A human-readable label for your site. Appears in audit log entries and error messages.
 
@@ -29,12 +29,12 @@ A human-readable label for your site. Appears in audit log entries and error mes
 
 ---
 
-### `baseUrl` (optional)
+### `baseUrl` (required)
 
-The base URL of your deployed site. Used for constructing preview links and as context for Claude when discussing URLs.
+The base URL of your API. Used to resolve relative endpoint paths and as the base for OpenAPI discovery.
 
 ```json
-"baseUrl": "https://my-portfolio.vercel.app"
+"baseUrl": "https://my-portfolio.vercel.app/api"
 ```
 
 ---
@@ -92,76 +92,89 @@ Sends no `Authorization` header. Use only for locally-hosted CMSs behind a firew
 
 ### `endpoints` (required — at least one)
 
-Maps resource types to their full API URLs. Each is optional; omitting one disables the corresponding tools.
+Maps resource keys to their API paths (relative to `baseUrl`) or full URLs.
 
 ```json
 "endpoints": {
-  "projects": "https://my-site.vercel.app/api/projects",
-  "blogs":    "https://my-site.vercel.app/api/blogs",
-  "media":    "https://my-site.vercel.app/api/media",
-  "tags":     "https://my-site.vercel.app/api/tags",
-  "siteConfig": "https://my-site.vercel.app/api/site-config",
-  "analytics":  "https://my-site.vercel.app/api/analytics"
+  "projects": "/projects",
+  "posts":    "/posts",
+  "media":    "/media",
+  "tags":     "/tags",
+  "authors":  "/authors"
 }
 ```
 
-| Field | Tools enabled |
-|-------|--------------|
-| `projects` | All 8 project tools |
-| `blogs` | All 9 blog tools |
-| `media` | All 3 media tools |
-| `tags` | Tag lookup (used internally by create/update) |
-| `siteConfig` | Future: site settings tools |
-| `analytics` | Future: analytics tools |
+**Every key (except `media`) generates 5 tools by default:**
+
+| Tool | Description |
+|------|-------------|
+| `list_X` | List records with `limit`, `search`, and enum-field filters |
+| `get_X` | Fetch a single record by ID |
+| `create_X` | Create a record (preview → confirm flow) |
+| `update_X` | Update a record by ID (auto-diff → confirm flow) |
+| `delete_X` | Delete a record (warning → confirm flow) |
+
+So `"projects"` → `list_projects`, `get_projects`, `create_projects`, `update_projects`, `delete_projects`.
+
+The `media` key is reserved for dedicated upload/list/delete media tools. All other keys are handled by the generic resource factory.
+
+When `legacyMode: true`, 3 tools are generated per endpoint instead: `list_X`, `get_X`, `mutate_X`.
 
 ---
 
-### `github` (optional)
+### `adapters` (optional)
 
-Enables the 3 GitHub tools (`scan_repo`, `sync_repo_to_project`, `list_repos`).
+Per-endpoint configuration for field name mapping and HTTP method override. Keys must match keys in `endpoints`.
 
 ```json
-"github": {
-  "token": "env:GITHUB_TOKEN",
-  "defaultOwner": "your-github-username"
+"adapters": {
+  "posts": {
+    "updateMethod": "PUT",
+    "fieldMap": {
+      "title":  "post_heading_1",
+      "body":   "post_content_markdown",
+      "status": "publication_state"
+    }
+  }
 }
 ```
 
-| Field | Description |
-|-------|-------------|
-| `token` | GitHub Personal Access Token. Needs `repo` scope for private repos, `public_repo` for public only. |
-| `defaultOwner` | When you say "scan my repo foo", this username is used if no owner is specified. |
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `updateMethod` | `"PATCH"` \| `"PUT"` | `"PATCH"` | HTTP method for update operations |
+| `fieldMap` | `Record<string, string>` | — | Internal name (Claude sees) → external name (API receives). Responses are reverse-mapped. |
+
+If an `adapters` key has no matching `endpoints` key, cms-mcp prints a warning at startup.
 
 ---
 
-### `fieldMap` (optional)
+### `legacyMode` (optional, default: `false`)
 
-Maps cms-mcp's generic field names to your API's actual field names. Useful when your API uses non-standard naming.
+When `true`, registers the v0.5-compatible `mutate_X` combined tool instead of the default v1.0.0 split tools (`create_X`, `update_X`, `delete_X`).
 
 ```json
-"fieldMap": {
-  "title":          "post_title",
-  "body":           "content_md",
-  "slug":           "url_slug",
-  "status":         "publish_state",
-  "tags":           "tag_list",
-  "coverImage":     "hero_image",
-  "publishedAt":    "published_date",
-  "seoTitle":       "meta_title",
-  "seoDescription": "meta_description",
-  "techStack":      "technologies",
-  "liveUrl":        "demo_url",
-  "repoUrl":        "github_url"
-}
+"legacyMode": true
 ```
 
-All fields default to their standard names if omitted.
+Use this if you have saved Claude prompts from v0.5 that reference `mutate_X`. See [Migration from v0.5](./migration-v0.5.md).
+
+---
+
+### `allowedPorts` (optional)
+
+Ports that are explicitly allowed in outbound API URLs. By default only port 80 and 443 are permitted (SSRF protection). Add non-standard ports used by your local or staging API here.
+
+```json
+"allowedPorts": [3000, 8080, 4000]
+```
+
+See [Security guide](./security.md) for full SSRF protection details.
 
 ---
 
 ### `readOnly` (optional, default: `false`)
 
-When `true`, all write operations are disabled. Claude will receive a clear message instead of executing any create, update, publish, or delete operation.
+When `true`, all write operations are disabled. Claude receives a clear message instead of executing any create, update, or delete operation.
 
 ```json
 "readOnly": true
@@ -179,57 +192,79 @@ Path to a file where every tool call is logged as newline-delimited JSON.
 "auditLog": "~/.cms-mcp/audit.log"
 ```
 
-Each line in the file is a JSON object:
+Each line is a JSON object:
 
 ```json
 {
   "timestamp": "2026-03-22T14:30:00.000Z",
-  "tool": "create_blog",
-  "args": { "title": "My Post", "status": "draft" },
-  "success": true,
+  "tool": "create_posts",
+  "args": { "title": "My Post", "status": "draft", "confirm": true },
+  "outcome": "success",
   "durationMs": 342
 }
 ```
 
-The `~` prefix is expanded to your home directory on both Unix and Windows.
+`outcome` is one of: `"success"`, `"error"`, `"validation_error"`, `"blocked_readonly"`. Secrets in args are automatically redacted. Long string values are truncated to 60 chars. The `~` prefix is expanded to your home directory on both Unix and Windows.
 
 ---
 
-## New fields (planned additions)
+### `policies` (optional)
 
-These fields are on the roadmap and will be validated by the config schema when implemented.
-
-### `policies` — Path to policies.json
+Path to a [policy engine configuration file](./advanced/policy-engine.md). Policies block writes that violate content governance rules before they reach the API.
 
 ```json
 "policies": "./cms-mcp.policies.json"
 ```
 
-Points to a [policy engine configuration file](./advanced/policy-engine.md). Policies block writes that violate content governance rules before they reach the API.
+Run `init_policies` to generate a starter file. See [Policy Engine](./advanced/policy-engine.md).
 
-### `webhook` — GitHub webhook listener
+---
+
+### `webhook` (optional)
+
+Starts an HTTP server that listens for GitHub push events and auto-syncs repos to your CMS.
 
 ```json
 "webhook": {
-  "port": 3456,
-  "secret": "env:WEBHOOK_SECRET"
+  "port": 3001,
+  "secret": "env:WEBHOOK_SECRET",
+  "path": "/webhook"
 }
 ```
 
-Starts an HTTP server that listens for GitHub push events. See [Webhook Mode](./advanced/webhook-mode.md).
+| Field | Default | Description |
+|-------|---------|-------------|
+| `port` | `3001` | Port for the webhook listener (1024–65535) |
+| `secret` | required | HMAC secret for validating GitHub payloads |
+| `path` | `"/webhook"` | URL path for the webhook endpoint |
 
-### `schemaCache` — SQLite schema cache
+See [Webhook Mode](./advanced/webhook-mode.md).
+
+---
+
+### `schemaCache` (optional)
+
+Caches discovered schemas locally in SQLite to reduce startup round trips.
 
 ```json
 "schemaCache": {
-  "path": "~/.cms-mcp/schema.db",
+  "path": "~/.cms-mcp/schema-cache.db",
   "ttlMinutes": 60
 }
 ```
 
-Caches discovered OpenAPI/CMS schemas locally in SQLite to reduce startup round trips. See [Schema Cache](./advanced/schema-cache.md).
+| Field | Default | Description |
+|-------|---------|-------------|
+| `path` | `"~/.cms-mcp/schema-cache.db"` | SQLite file location |
+| `ttlMinutes` | `60` | Cache TTL in minutes |
 
-### `openapi` — OpenAPI auto-discovery
+See [Schema Cache](./advanced/schema-cache.md).
+
+---
+
+### `openapi` (optional)
+
+Controls OpenAPI spec auto-discovery at startup.
 
 ```json
 "openapi": {
@@ -238,7 +273,74 @@ Caches discovered OpenAPI/CMS schemas locally in SQLite to reduce startup round 
 }
 ```
 
-When `autoDiscover` is `true`, cms-mcp fetches your API's OpenAPI spec at startup to learn about available endpoints and field shapes. See [OpenAPI Discovery](./advanced/openapi-discovery.md).
+| Field | Default | Description |
+|-------|---------|-------------|
+| `autoDiscover` | `true` | Probe common spec paths at startup |
+| `discoveryUrl` | — | Skip discovery and fetch this URL directly |
+
+When a spec is found, it is used as the authoritative schema source (Tier 2 in the 4-tier resolution chain). See [OpenAPI Discovery](./advanced/openapi-discovery.md).
+
+---
+
+### `github` (optional)
+
+Enables the GitHub tools (`scan_repo`, `sync_repo_to_project`, `list_repos`).
+
+```json
+"github": {
+  "token": "env:GITHUB_TOKEN",
+  "defaultOwner": "your-github-username"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `token` | GitHub Personal Access Token. Needs `repo` scope for private repos, `public_repo` for public only. |
+| `defaultOwner` | When you say "scan my repo foo", this username is used if no owner is specified. |
+
+---
+
+### `approvals` (optional)
+
+Enables the human approval gate. Write operations pause until you approve in a browser UI.
+
+```json
+"approvals": {
+  "port": 2323,
+  "timeoutMs": 300000,
+  "tools": ["delete_posts", "delete_projects"]
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `port` | `2323` | Localhost port for the approval dashboard |
+| `timeoutMs` | `300000` (5 min) | Auto-reject timeout in milliseconds |
+| `tools` | all write tools | Specific tool names to gate; omit to gate all writes |
+
+See [Approval Gate](./advanced/approval-gate.md).
+
+---
+
+### `embedding` (optional)
+
+Enables semantic vector search via OpenAI embeddings.
+
+```json
+"embedding": {
+  "provider": "openai",
+  "apiKey": "env:OPENAI_API_KEY",
+  "model": "text-embedding-3-small"
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `provider` | required | Currently only `"openai"` |
+| `apiKey` | required | OpenAI API key or `env:` reference |
+| `model` | `"text-embedding-3-small"` | Embedding model name |
+
+See [Vector Search](./advanced/vector-search.md).
 
 ---
 
@@ -261,7 +363,9 @@ Add it to the "env" field in your Claude Desktop config.
 - `auth.token` (bearer and api-key)
 - `auth.password` (basic)
 - `github.token`
+- `github.webhookSecret`
 - `webhook.secret`
+- `embedding.apiKey`
 
 **Never put raw secrets directly in the JSON file** — the file may be committed to source control.
 
@@ -274,25 +378,24 @@ Add it to the "env" field in your Claude Desktop config.
 ```json
 {
   "name": "My Supabase Portfolio",
-  "baseUrl": "https://my-portfolio.vercel.app",
+  "baseUrl": "https://my-portfolio.vercel.app/api",
   "auth": {
     "type": "bearer",
     "token": "env:SUPABASE_SERVICE_ROLE_KEY"
   },
   "endpoints": {
-    "projects": "https://my-portfolio.vercel.app/api/projects",
-    "blogs":    "https://my-portfolio.vercel.app/api/blogs",
-    "media":    "https://my-portfolio.vercel.app/api/media"
+    "projects": "/projects",
+    "posts":    "/posts",
+    "media":    "/media"
   },
   "github": {
     "token": "env:GITHUB_TOKEN",
     "defaultOwner": "yourname"
   },
+  "schemaCache": { "path": "~/.cms-mcp/schema-cache.db", "ttlMinutes": 60 },
   "auditLog": "~/.cms-mcp/audit.log"
 }
 ```
-
-The API routes in your Next.js app validate the `Authorization: Bearer` header against `SUPABASE_SERVICE_ROLE_KEY`.
 
 ---
 
@@ -310,9 +413,9 @@ PocketBase uses a custom `Authorization` header with an admin token:
     "token": "env:PB_ADMIN_TOKEN"
   },
   "endpoints": {
-    "projects": "https://pb.my-site.com/api/collections/projects/records",
-    "blogs":    "https://pb.my-site.com/api/collections/blog_posts/records",
-    "media":    "https://pb.my-site.com/api/collections/media/records"
+    "projects": "/api/collections/projects/records",
+    "posts":    "/api/collections/blog_posts/records",
+    "media":    "/api/collections/media/records"
   }
 }
 ```
@@ -333,13 +436,17 @@ Get your admin token by calling `POST /api/admins/auth-with-password` and storin
     "token": "env:PAYLOAD_API_KEY"
   },
   "endpoints": {
-    "projects": "https://payload.my-site.com/api/projects",
-    "blogs":    "https://payload.my-site.com/api/posts",
-    "media":    "https://payload.my-site.com/api/media"
+    "projects": "/api/projects",
+    "posts":    "/api/posts",
+    "media":    "/api/media"
   },
-  "fieldMap": {
-    "body": "content",
-    "coverImage": "heroImage"
+  "adapters": {
+    "posts": {
+      "fieldMap": {
+        "body":        "content",
+        "coverImage":  "heroImage"
+      }
+    }
   }
 }
 ```
@@ -350,20 +457,18 @@ In Payload, enable API key authentication in your collection config and set `use
 
 ### Custom Next.js API (no external CMS)
 
-For a fully custom Next.js portfolio where your API routes live alongside your frontend:
-
 ```json
 {
   "name": "Custom Portfolio",
-  "baseUrl": "https://yourname.dev",
+  "baseUrl": "https://yourname.dev/api",
   "auth": {
     "type": "bearer",
     "token": "env:API_SECRET_KEY"
   },
   "endpoints": {
-    "projects": "https://yourname.dev/api/projects",
-    "blogs":    "https://yourname.dev/api/blog",
-    "media":    "https://yourname.dev/api/media"
+    "projects": "/projects",
+    "posts":    "/posts",
+    "media":    "/media"
   },
   "github": {
     "token": "env:GITHUB_TOKEN",

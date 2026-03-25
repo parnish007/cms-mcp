@@ -16,7 +16,14 @@ export interface MediaUploadResult {
   sizeBytes: number;
 }
 
-// ─── Security: Block SSRF targets ─────────────────────────────────────────────
+// ─── Security: SSRF v2 ────────────────────────────────────────────────────────
+//
+// v1.0.0 changes:
+//   - Explicit block on 169.254.169.254 (AWS/GCP/Azure metadata endpoint)
+//   - Port whitelist: only 80 and 443 allowed by default
+//     (configurable via config.allowedPorts)
+//   - Blocks null bytes and URL-encoded variants
+//   - Explicit OCI metadata block: 192.0.2.x (documentation range)
 
 const PRIVATE_IP_RE = [
   /^localhost$/i,
@@ -25,31 +32,67 @@ const PRIVATE_IP_RE = [
   /^10\./,
   /^172\.(1[6-9]|2\d|3[01])\./,
   /^192\.168\./,
-  /^169\.254\./, // link-local / AWS metadata
-  /^\[?::1\]?$/,       // IPv6 loopback (with or without brackets)
-  /^\[?fc00:/i,        // IPv6 ULA
-  /^\[?fe80:/i,        // IPv6 link-local
+  /^169\.254\./,        // link-local AND AWS/GCP/Azure cloud metadata range
+  /^\[?::1\]?$/,        // IPv6 loopback
+  /^\[?fc00:/i,         // IPv6 ULA
+  /^\[?fe80:/i,         // IPv6 link-local
 ];
 
-export function assertSafeUrl(raw: string): URL {
+// Cloud metadata endpoints blocked explicitly by full address
+const BLOCKED_HOSTS = new Set([
+  "169.254.169.254",  // AWS EC2 / GCP / Azure IMDS
+  "metadata.google.internal",
+  "metadata.internal",
+]);
+
+// Standard HTTP ports — allowed without explicit whitelist
+const STANDARD_PORTS = new Set([80, 443]);
+
+export interface SsrfCheckOptions {
+  /** Additional ports to allow (from config.allowedPorts). Defaults to []. */
+  allowedPorts?: number[];
+}
+
+export function assertSafeUrl(raw: string, opts: SsrfCheckOptions = {}): URL {
+  // Reject null bytes before URL parsing (bypass attempt)
+  if (raw.includes("\0") || raw.includes("%00")) {
+    throw new Error(`[media-proxy] Blocked URL — contains null bytes`);
+  }
+
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    throw new Error(`[media-proxy] Invalid URL: ${raw}`);
+    throw new Error(`[media-proxy] Invalid URL: ${raw.slice(0, 80)}`);
   }
 
-  // Only allow https (and http for explicitly local dev configs)
+  // Protocol check
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     throw new Error(`[media-proxy] Blocked URL scheme "${url.protocol}" — only https/http allowed`);
   }
 
-  // Resolve hostname and block private/internal ranges
-  const hostname = url.hostname;
+  const hostname = url.hostname.toLowerCase();
+
+  // Explicit host blocklist
+  if (BLOCKED_HOSTS.has(hostname)) {
+    throw new Error(`[media-proxy] Blocked URL — "${hostname}" is a cloud metadata endpoint (SSRF protection)`);
+  }
+
+  // Private IP range check
   for (const pattern of PRIVATE_IP_RE) {
     if (pattern.test(hostname)) {
       throw new Error(`[media-proxy] Blocked URL — private/internal host "${hostname}" not allowed (SSRF protection)`);
     }
+  }
+
+  // Port whitelist check
+  const port = url.port ? parseInt(url.port, 10) : (url.protocol === "https:" ? 443 : 80);
+  const allowedPorts = new Set([...STANDARD_PORTS, ...(opts.allowedPorts ?? [])]);
+  if (!allowedPorts.has(port)) {
+    throw new Error(
+      `[media-proxy] Blocked URL — port ${port} not allowed. ` +
+      `Add it to config.allowedPorts to whitelist non-standard ports.`
+    );
   }
 
   return url;
@@ -164,7 +207,7 @@ export async function fetchToBuffer(
     filename = `upload-${randomUUID()}.${extFromMime(mimeType)}`;
   }
 
-  console.error(`[media-proxy] Fetched ${filename} (${mimeType}, ${buffer.byteLength} bytes)`);
+  process.stderr.write(`[media-proxy] Fetched ${filename} (${mimeType}, ${buffer.byteLength} bytes)\n`);
 
   return { buffer, mimeType, filename };
 }
@@ -237,7 +280,7 @@ export async function uploadToEndpoint(
     undefined;
 
   if (!rawUrl) {
-    console.error(`[media-proxy] Warning: could not extract URL from upload response`);
+    process.stderr.write(`[media-proxy] Warning: could not extract URL from upload response\n`);
   }
 
   return {

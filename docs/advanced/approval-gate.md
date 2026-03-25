@@ -5,7 +5,7 @@ The approval gate is a human-in-the-loop layer that intercepts write operations 
 ## How it works
 
 ```
-Claude calls mutate_projects({ action: "delete", id: "42", confirm: true })
+Claude calls delete_projects({ id: "42", confirm: true })
   ↓
 cms-mcp pauses execution
   ↓
@@ -43,12 +43,14 @@ npx cms-mcp --config ./config.json --approval
 {
   "approvals": {
     "port": 2323,
-    "tools": ["mutate_projects", "mutate_posts"]
+    "tools": ["delete_projects", "delete_posts", "create_posts"]
   }
 }
 ```
 
-If `tools` is omitted, **all write tools** (create, update, publish, delete) require approval.
+Tool names follow the v1.0.0 naming: `create_X`, `update_X`, `delete_X`. If you use `legacyMode: true`, use `mutate_X` instead.
+
+If `tools` is omitted, **all write tools** (create, update, delete) require approval.
 
 ## Dashboard
 
@@ -67,7 +69,7 @@ Cards disappear automatically after resolution.
 If you don't respond within `timeoutMs` (default: 5 minutes), the operation is auto-rejected. Claude receives:
 
 ```
-"mutate_projects" was rejected by the human operator via the approval gate.
+"delete_projects" was rejected by the human operator via the approval gate.
 ```
 
 Claude may ask you to approve manually and retry.

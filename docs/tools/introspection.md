@@ -11,10 +11,10 @@ These are the "meta" tools — they help Claude (and you) understand the CMS API
 | `inspect_endpoint_schema` | Fetch live records and display field types as a markdown table |
 | `refresh_resource_schema` | Invalidate cache + re-introspect an endpoint, then prompt restart |
 | `list_configured_endpoints` | Show all configured endpoint keys, URLs, and cache status |
-| `check_policies` | Validate a data payload against your policies file |
-| `init_policies` | Write a starter `cms-mcp.policies.json` to disk |
 | `cache_stats` | Show SQLite schema cache statistics |
 | `clear_cache` | Delete all cache entries (forces full re-introspection on next start) |
+
+> **`check_policies` and `init_policies`** are policy tools, not introspection tools. They are always registered and described in [docs/advanced/policy-engine.md](../advanced/policy-engine.md).
 
 ---
 
@@ -24,7 +24,7 @@ Accepts **any configured endpoint key** — not limited to blogs/projects.
 
 The tool uses the same 4-tier schema resolution as startup:
 1. **OpenAPI spec** — if `discover_api` has been run and the spec is cached, schema is sourced from the spec (most reliable — every field declared)
-2. **Live sampling** — fetches up to 5 records, infers types from runtime values
+2. **Live sampling** — fetches up to 20 records, merges fields across all samples, infers types from runtime values
 
 ```
 "Inspect the schema of my products endpoint"
@@ -55,7 +55,7 @@ The tool uses the same 4-tier schema resolution as startup:
 ```
 ## Schema: /api/products
 
-Sampled 5 records — 8 fields detected
+Sampled 20 records — 8 fields detected
 
 | Field      | Type              | Required | Example          |
 |------------|-------------------|----------|------------------|
@@ -105,7 +105,7 @@ Output:
 | authors  | /api/authors     | —            |
 | media    | /api/uploads     | —            |
 
-Tools generated per endpoint (except media): list_X, get_X, preview_create_X, create_X, preview_update_X, update_X, delete_X
+Tools generated per endpoint (except `media`): `list_X`, `get_X`, `create_X`, `update_X`, `delete_X` (or `mutate_X` when `legacyMode: true`)
 ```
 
 ---
@@ -137,20 +137,6 @@ Writes the endpoints discovered by `discover_api` directly to your config file:
 ```
 
 After this, restart cms-mcp to pick up the new endpoints and generate tools for them.
-
----
-
-## `check_policies`
-
-Test a payload against your policies before committing to a write:
-
-```
-"Check if this post data passes publishing policies"
-→ check_policies({
-    tool: "publish_posts",
-    data: { title: "My Post", tags: ["one"], cover_image: null }
-  })
-```
 
 ---
 

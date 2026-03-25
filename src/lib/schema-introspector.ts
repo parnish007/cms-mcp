@@ -1,11 +1,13 @@
 // src/lib/schema-introspector.ts
-// Structured schema introspection — wraps the raw API call and type-inference
-// logic and returns a machine-readable ResourceSchema instead of markdown text.
+// v1.0.0 — Structured schema introspection with schema merging.
 //
-// Unlike schema-inspector.ts (which produces a human-readable markdown table
-// for the inspect_endpoint_schema tool), this module produces a structured
-// ResourceSchema that the generic tool factory can use to build Zod shapes
-// and register tools at server startup.
+// Changes from v0.5.0:
+//   - Default sample size increased from 5 → 20 records
+//   - Schema merging: fields that appear in <100% of records get
+//     `inconsistent: true`, causing Zod to use .optional() for them
+//     rather than failing or silently excluding them
+//   - This fixes the common case where optional fields are absent in
+//     the first few records but exist in others (e.g. nullable metadata fields)
 
 import type { ApiClient } from "./api-client.js";
 import type { ResourceSchema, FieldDefinition } from "./resource-schema.js";
@@ -16,6 +18,18 @@ import {
   detectTitleField,
   detectStatusField,
 } from "./type-inference.js";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+/** Number of records to sample for schema inference. Increased from 5 in v0.5.0. */
+export const SAMPLE_SIZE = 20;
+
+/**
+ * Threshold for marking a field as inconsistent.
+ * If a field appears in fewer than this fraction of sampled records,
+ * it's marked as `inconsistent: true` and always uses .optional() in Zod.
+ */
+const CONSISTENCY_THRESHOLD = 1.0; // field must be present in ALL records to be "consistent"
 
 // ─── Format example value ─────────────────────────────────────────────────────
 
@@ -32,14 +46,15 @@ function formatExample(value: unknown): string {
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 /**
- * Fetch up to 5 records from a REST endpoint and return a structured
- * ResourceSchema describing the field names, types, and metadata.
+ * Fetch up to SAMPLE_SIZE records from a REST endpoint and return a structured
+ * ResourceSchema with merged field definitions.
  *
- * Returns a "cold-start" schema with empty fields if the endpoint returns
- * zero records (e.g. a brand-new CMS with no content yet).
+ * Schema merging: all fields across ALL sampled records are collected.
+ * Fields absent in some records are marked `inconsistent: true` and will
+ * use .optional() validators in the generated Zod shape.
  *
- * Never throws — all errors are caught and returned as cold-start schemas
- * with an attached errorMessage, so one failing endpoint never blocks others.
+ * Returns a cold-start schema if the endpoint returns zero records.
+ * Never throws — errors are caught and returned as cold-start schemas.
  */
 export async function introspectResourceSchema(
   client: ApiClient,
@@ -49,49 +64,93 @@ export async function introspectResourceSchema(
   let raw: unknown;
 
   try {
-    raw = await client.get<unknown>(endpointUrl, { limit: 5, page_size: 5, per_page: 5 });
+    raw = await client.get<unknown>(endpointUrl, {
+      limit: SAMPLE_SIZE,
+      page_size: SAMPLE_SIZE,
+      per_page: SAMPLE_SIZE,
+    });
   } catch (err) {
-    console.error(
+    process.stderr.write(
       `[cms-mcp] Schema introspection failed for "${resourceKey}" (${endpointUrl}): ` +
-      `${(err as Error).message?.slice(0, 120) ?? "unknown error"}`,
+      `${(err as Error).message?.slice(0, 120) ?? "unknown error"}\n`,
     );
-    return coldStart(resourceKey, endpointUrl, "cold-start");
+    return coldStart(resourceKey, endpointUrl);
   }
 
   const items = normalizeList(raw);
 
   if (items.length === 0) {
-    console.error(
-      `[cms-mcp] Schema introspection: "${resourceKey}" returned 0 records — cold-start mode.`,
+    process.stderr.write(
+      `[cms-mcp] Schema introspection: "${resourceKey}" returned 0 records — cold-start mode.\n`,
     );
-    return coldStart(resourceKey, endpointUrl, "cold-start");
+    return coldStart(resourceKey, endpointUrl);
   }
 
-  // Collect all field names across all sampled records
-  const allKeys = new Set<string>();
+  process.stderr.write(
+    `[cms-mcp] Sampled ${items.length} record(s) for "${resourceKey}" schema inference.\n`,
+  );
+
+  const totalRecords = items.length;
+
+  // ── Schema merging ─────────────────────────────────────────────────────────
+  //
+  // Step 1: Collect every field name that appears in ANY record.
+  //         This is the union of all fields across all records.
+  //
+  // Step 2: For each field, collect all non-null values across ALL records.
+  //         Track how many records have the field present (even if null).
+  //
+  // Step 3: Infer type from collected values.
+  //         Mark field as `inconsistent` if it doesn't appear in all records.
+
+  // Map: fieldName → { values: unknown[], presentCount: number }
+  const fieldData = new Map<string, { values: unknown[]; presentCount: number }>();
+
   for (const item of items) {
-    if (item && typeof item === "object" && !Array.isArray(item)) {
-      for (const key of Object.keys(item as object)) {
-        allKeys.add(key);
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+
+    const record = item as Record<string, unknown>;
+
+    // Track which fields we've seen in THIS record to count presence
+    const seenInThisRecord = new Set<string>();
+
+    for (const [key, value] of Object.entries(record)) {
+      if (!fieldData.has(key)) {
+        fieldData.set(key, { values: [], presentCount: 0 });
       }
+      const entry = fieldData.get(key)!;
+      entry.values.push(value);
+      seenInThisRecord.add(key);
+    }
+
+    // For fields seen in previous records but not this one, we still need
+    // to know they're absent here (for inconsistency detection)
+    // We do this by NOT incrementing presentCount for missing fields
+    for (const key of seenInThisRecord) {
+      fieldData.get(key)!.presentCount++;
     }
   }
 
-  // For each field, collect values and infer type
+  // Build FieldDefinitions
   const fields: FieldDefinition[] = [];
 
-  for (const key of allKeys) {
-    const values = items.map((item: any) => item?.[key]);
-    const nullCount = values.filter((v) => v === null || v === undefined).length;
-    const type = inferType(values);
-    const firstNonNull = values.find((v) => v !== null && v !== undefined);
+  for (const [key, { values, presentCount }] of fieldData) {
+    const allValues = values; // includes nulls
+    const nullCount = allValues.filter((v) => v === null || v === undefined).length;
+    const type = inferType(allValues);
+    const firstNonNull = allValues.find((v) => v !== null && v !== undefined);
+
+    // A field is "inconsistent" if it doesn't appear in every sampled record
+    const presentFraction = presentCount / totalRecords;
+    const inconsistent = presentFraction < CONSISTENCY_THRESHOLD;
 
     fields.push({
-      name:         key,
+      name:          key,
       type,
-      nullable:     nullCount > 0,
-      alwaysPresent: nullCount === 0,
-      example:      formatExample(firstNonNull ?? null),
+      nullable:      nullCount > 0,
+      alwaysPresent: !inconsistent && nullCount === 0,
+      inconsistent,
+      example:       formatExample(firstNonNull ?? null),
     });
   }
 
@@ -121,11 +180,7 @@ export async function introspectResourceSchema(
 
 // ─── Cold-start schema ────────────────────────────────────────────────────────
 
-function coldStart(
-  resourceKey: string,
-  endpointUrl: string,
-  source: "cold-start",
-): ResourceSchema {
+function coldStart(resourceKey: string, endpointUrl: string): ResourceSchema {
   return {
     resourceKey,
     endpointUrl,
@@ -135,6 +190,6 @@ function coldStart(
     statusField: undefined,
     sampledAt:   Date.now(),
     recordCount: 0,
-    source,
+    source:      "cold-start",
   };
 }

@@ -32,7 +32,7 @@ export class SchemaCache {
     this.ttlMs = ttlMinutes * 60 * 1000;
 
     this.init();
-    console.error(`[cms-mcp] Schema cache: ${resolvedPath} (TTL: ${ttlMinutes}m)`);
+    process.stderr.write(`[cms-mcp] Schema cache: ${resolvedPath} (TTL: ${ttlMinutes}m)\n`);
   }
 
   // ─── Init schema ───────────────────────────────────────────────────────────
@@ -126,7 +126,7 @@ export class SchemaCache {
       "DELETE FROM schema_cache WHERE ? - cached_at > ttl_ms"
     ).run(Date.now());
     if (result.changes > 0) {
-      console.error(`[cms-mcp] Schema cache: purged ${result.changes} expired entries`);
+      process.stderr.write(`[cms-mcp] Schema cache: purged ${result.changes} expired entries\n`);
     }
     return result.changes;
   }

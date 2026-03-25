@@ -17,12 +17,15 @@ export function registerMediaTools(
 
   // ── upload_media_from_url ──────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "upload_media_from_url",
     {
-      url: z.string().url().describe("Public URL of the image or file to upload"),
-      alt_text: z.string().optional().describe("Accessible alt text for images"),
-      folder: z.string().optional().describe("Destination folder/path in your media library"),
+      description: "Download a remote image/file by URL and upload it to your CMS media endpoint as multipart/form-data. SSRF-hardened: blocks private IPs, metadata endpoints, port whitelist, null-byte blocking. 50 MB hard cap.",
+      inputSchema: {
+        url:      z.string().url().describe("Public URL of the image or file to upload"),
+        alt_text: z.string().optional().describe("Accessible alt text for images"),
+        folder:   z.string().optional().describe("Destination folder/path in your media library"),
+      },
     },
     async (args) => {
       if (config.readOnly) {
@@ -56,11 +59,14 @@ export function registerMediaTools(
 
   // ── list_media ─────────────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "list_media",
     {
-      limit: z.number().int().min(1).max(100).default(20),
-      search: z.string().optional().describe("Search by filename"),
+      description: "List media files from your CMS media endpoint.",
+      inputSchema: {
+        limit:  z.number().int().min(1).max(100).default(20),
+        search: z.string().optional().describe("Search by filename"),
+      },
     },
     async (args) => {
       return withAudit(audit, "list_media", args, async () => {
@@ -90,11 +96,14 @@ export function registerMediaTools(
 
   // ── delete_media ───────────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "delete_media",
     {
-      id: z.string().min(1).describe("Media asset ID"),
-      confirm: z.literal(true).describe("Must be true — irreversible"),
+      description: "Delete a media asset by ID. Requires confirm: true — irreversible.",
+      inputSchema: {
+        id:      z.string().min(1).describe("Media asset ID"),
+        confirm: z.literal(true).describe("Must be true — irreversible"),
+      },
     },
     async (args) => {
       if (config.readOnly) {

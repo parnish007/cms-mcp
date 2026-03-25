@@ -13,7 +13,7 @@
 
 Write blog posts, manage projects, upload media, search content semantically, enforce publishing policies, and require human approval before anything goes live — all through natural language with Claude.
 
-**v0.5.0: 3 tools per endpoint (`list_X`, `get_X`, `mutate_X`) — auto-generated from OpenAPI spec or live schema introspection, with relation hints and first-run `init` wizard.**
+**v1.0.0: 5 tools per endpoint (`list_X`, `get_X`, `create_X`, `update_X`, `delete_X`) — auto-generated from OpenAPI spec or 20-record live schema introspection, with CMSAdapter field mapping, SecretManager, CompensatingTransaction rollback, SSRF v2 port whitelist, and a full interactive `init` wizard.**
 
 </div>
 
@@ -68,20 +68,26 @@ cms-mcp is a schema-aware bridge: it reads your API's shape at startup, builds t
 |------|--------|-------|-----------|
 | **1 — Cache** | SQLite | Instant | Previous run cached a schema — no API calls |
 | **2 — OpenAPI** | JSON/YAML spec | ~200ms | `openapi.autoDiscover: true` or `discoveryUrl` set — authoritative |
-| **3 — Sampling** | Live records | ~500ms | No spec available — fetches 5 records, infers types |
+| **3 — Sampling** | Live records | ~500ms | No spec available — fetches **20 records**, merges fields, infers types |
 | **4 — Cold-start** | None | Instant | Zero records + no spec — passthrough tools, still writable |
 
-**Why OpenAPI first?** Sampling 5 records misses optional fields and fails on empty endpoints. An OpenAPI spec declares every field, format, required status, and enum value explicitly — zero false positives. If your API has a spec (JSON or YAML), cms-mcp uses it.
+**Why OpenAPI first?** Sampling records misses optional fields and fails on empty endpoints. An OpenAPI spec declares every field, format, required status, and enum value explicitly — zero false positives. If your API has a spec (JSON or YAML), cms-mcp uses it.
+
+**v1.0.0 schema merging:** When sampling, all fields across all 20 records are collected as a union. Fields absent in even one record are flagged `inconsistent: true` and always use `.optional()` in generated Zod shapes — no more false "required" errors on optional fields.
 
 ### What gets registered per endpoint
 
-For each key in `config.endpoints` (except `media`), exactly **3 tools** are registered:
+For each key in `config.endpoints` (except `media`), exactly **5 tools** are registered (default):
 
 | Tool | What it does |
 |------|-------------|
 | `list_X` | Filter, paginate, full-text search. Enum fields become optional filter params. |
 | `get_X` | Fetch single record by ID. |
-| `mutate_X` | Create / update / delete / preview — one tool, `action` param selects the operation. |
+| `create_X` | Create new record. `preview: true` shows field table without writing. |
+| `update_X` | Update existing record by `id`. `preview: true` shows diff. |
+| `delete_X` | Delete record by `id`. Requires `confirm: true`. |
+
+Set `legacyMode: true` in config to register the v0.5 `mutate_X` combined tool instead.
 
 Foreign-key fields (e.g. `author_id`) are auto-detected and surfaced as relation hints in tool descriptions: `author_id → get_authors`.
 
@@ -95,26 +101,31 @@ All schemas are cached in SQLite — next startup hits Tier 1 instantly.
 
 | Feature | What it does |
 |---------|-------------|
-| **3 tools per endpoint** | `list_X`, `get_X`, `mutate_X` — small, predictable tool surface |
+| **5 tools per endpoint** | `list_X`, `get_X`, `create_X`, `update_X`, `delete_X` — clean, granular tool surface |
+| **`legacyMode`** | `legacyMode: true` keeps v0.5 `mutate_X` combined tool for backward compat |
 | **OpenAPI-first schema** | 4-tier: cache → OpenAPI (JSON/YAML) → sampling → cold-start passthrough |
+| **20-record schema merging** | Samples 20 records, merges fields; fields absent in any record marked `.optional()` |
+| **CMSAdapter field mapping** | `adapters.X.fieldMap` translates internal→external field names bidirectionally |
+| **PATCH / PUT toggle** | `adapters.X.updateMethod: "PUT"` for APIs requiring full-replacement semantics |
+| **SecretManager** | Secrets tokenized after `loadConfig()` — Config object never holds plain-text credentials |
+| **CompensatingTransaction** | Honest rollback — `CriticalInconsistencyError` surfaces orphaned IDs for manual cleanup |
 | **Any endpoint key** | `"products"`, `"authors"`, `"events"` — any name, any REST endpoint |
 | **Relation hints** | FK fields (`author_id`) linked to matching endpoints in tool descriptions |
 | **Zod validation firewall** | Dynamic Zod shapes built at startup — MCP SDK validates before handlers run |
-| **Atomic transactions + rollback** | Failed writes auto-revert — no half-created records |
-| **Diff preview** | `mutate_X({ action: "preview" })` — field-level change table before any API call |
+| **Diff preview** | `create_X({ preview: true })` / `update_X({ preview: true })` — change table, no API call |
 | **Cold-start passthrough** | Empty endpoints get tools immediately — no startup failure |
 | **Schema cache** | SQLite-backed TTL cache — instant restarts after first run |
 | **Audit logging** | Every call: tool name, args (secrets redacted), outcome, duration |
 | **Read-only mode** | `--readonly` disables all write tools |
-| **SSRF hardening** | Private IPs, loopback, AWS metadata, IPv6 ULA blocked |
-| **`npx cms-mcp init`** | Detects your CMS type and writes a starter config in seconds |
+| **SSRF v2** | Private IPs, cloud metadata (`169.254.169.254`), port whitelist, null-byte blocking |
+| **`npx cms-mcp init`** | Full interactive wizard — HEAD probes, CMS detection, auth/endpoint/feature prompts |
 
 ### Optional plugins (registered only when config block is present)
 
 | Plugin | Config block | What it adds |
 |--------|-------------|--------------|
 | **Approval gate** | `"approvals": {...}` | Human click required before any write executes |
-| **Policy engine** | `"policies": "..."` | `check_policies`, `init_policies` — 10 rule types |
+| **Policy engine** | `"policies": "..."` | Auto-enforced on every write; `check_policies`, `init_policies` always available |
 | **Semantic search** | `"schemaCache"` + `"embedding"` | `sync_all_content`, `semantic_search`, `knowledge_status` |
 | **GitHub** | `"github": {...}` | `scan_repo`, `sync_repo_to_project`, `list_repos` |
 | **Webhook** | `--webhook` + `"webhook": {...}` | Auto-draft on GitHub push |
@@ -171,7 +182,7 @@ docker compose up
 }
 ```
 
-Any key works. At startup, cms-mcp generates `list_posts`, `get_posts`, `mutate_posts`, `list_products`, `get_products`, `mutate_products`, etc. — schemas built from your API's actual fields.
+Any key works. At startup, cms-mcp generates `list_posts`, `get_posts`, `create_posts`, `update_posts`, `delete_posts`, `list_products`, `get_products`, `create_products`, etc. — schemas built from your API's actual fields.
 
 Or skip the manual config and let `init` detect your CMS:
 
@@ -259,8 +270,21 @@ claude mcp add cms-mcp -- npx cms-mcp --config ./cms-mcp.config.json
   "approvals": {
     "port":      2323,
     "timeoutMs": 300000,
-    "tools":     ["mutate_posts", "mutate_products"]
+    "tools":     ["delete_posts", "delete_products"]
   },
+
+  "adapters": {
+    "posts": {
+      "updateMethod": "PUT",
+      "fieldMap": {
+        "title": "post_heading_1",
+        "body":  "post_content_markdown"
+      }
+    }
+  },
+
+  "legacyMode":   false,
+  "allowedPorts": [3000, 8080],
 
   "openapi": {
     "autoDiscover": true,
@@ -308,41 +332,62 @@ npx cms-mcp --config <path>         # Start MCP server
 
 ## Generic Tool System
 
-### The 3-tool model
+### The 5-tool model (v1.0.0 default)
 
-For every key in `config.endpoints` (except `media`), exactly 3 tools are registered:
+For every key in `config.endpoints` (except `media`), exactly 5 tools are registered:
 
 #### `list_X`
 Params: `limit` (default 20), `search` (full-text), plus one optional filter per `enum(...)` field.
 
 ```
-"List my published posts"       → list_posts({ status: "published", limit: 20 })
+"List my published posts"        → list_posts({ status: "published", limit: 20 })
 "Find products mentioning 'pro'" → list_products({ search: "pro" })
 ```
 
 #### `get_X`
 Params: `id` (required). Returns the full record as JSON.
 
-#### `mutate_X`
-One tool for all write operations. The `action` param selects what happens:
-
-| action | What it does | confirm required? |
-|--------|-------------|------------------|
-| `"preview"` | Show diff table — no API call | no |
-| `"create"` | POST new record | yes |
-| `"update"` | PATCH existing record by `id` | yes |
-| `"delete"` | DELETE record by `id` | yes |
+#### `create_X`
+Creates a new record. Pass `preview: true` to see a field table without writing.
 
 ```
 "Preview creating a post titled Hello World"
-→ mutate_posts({ action: "preview", data: { title: "Hello World", status: "draft" } })
+→ create_posts({ title: "Hello World", status: "draft", preview: true })
 
 "Create it"
-→ mutate_posts({ action: "create", data: { title: "Hello World", status: "draft" }, confirm: true })
+→ create_posts({ title: "Hello World", status: "draft", confirm: true })
+```
 
+#### `update_X`
+Updates an existing record. Pass `preview: true` (or omit `confirm`) to see a diff first.
+
+```
+"Update post 42 — set status to published"
+→ update_posts({ id: "42", status: "published", confirm: true })
+```
+
+#### `delete_X`
+Deletes a record. Always requires `confirm: true` — shows a warning preview otherwise.
+
+```
 "Delete post 42"
+→ delete_posts({ id: "42", confirm: true })
+```
+
+### Legacy mode (v0.5 compatibility)
+
+Set `legacyMode: true` in config to revert to the v0.5 `mutate_X` combined tool:
+
+```json
+{ "legacyMode": true }
+```
+
+```
+→ mutate_posts({ action: "create", data: { title: "Hello World" }, confirm: true })
 → mutate_posts({ action: "delete", id: "42", confirm: true })
 ```
+
+Useful if you have saved Claude prompts or MCP clients that reference `mutate_X` by name.
 
 ### Schema → Zod type mapping
 
@@ -371,14 +416,36 @@ list_posts — ... Relations: author_id → get_authors | tag_ids[] → list_tag
 
 Claude uses this to know which tool to call when resolving related records.
 
+### CMSAdapter — field mapping and HTTP method override
+
+Some CMS APIs use field names like `post_heading_1` that differ from what Claude sees (`title`). The `adapters` config block handles this bidirectionally:
+
+```json
+{
+  "adapters": {
+    "posts": {
+      "updateMethod": "PUT",
+      "fieldMap": {
+        "title":  "post_heading_1",
+        "body":   "post_content_markdown",
+        "status": "publication_state"
+      }
+    }
+  }
+}
+```
+
+- **`fieldMap`** — Claude uses the left-hand names; the API receives the right-hand names. Responses are reverse-mapped before returning to Claude.
+- **`updateMethod`** — `"PATCH"` (default) or `"PUT"`. Use `"PUT"` for APIs that require the full record on update.
+
 ### Cold-start mode
 
-Zero records + no OpenAPI spec → tools registered in passthrough mode. `mutate_X` accepts `data: Record<string, unknown>` — pass any key-value pairs.
+Zero records + no OpenAPI spec → tools registered in passthrough mode. `create_X` / `update_X` accept any key-value `fields` object — pass anything.
 
 **Graduating from cold-start:**
 1. Create one record in your CMS
-2. `"Refresh the schema for X"` → `refresh_resource_schema`
-3. Restart cms-mcp
+2. Ask Claude: `"Refresh the schema for X"` → `refresh_resource_schema`
+3. Restart cms-mcp — typed `create_X`/`update_X` tools appear
 
 ### Schema refresh workflow
 
@@ -398,9 +465,11 @@ refresh_resource_schema({ resource_key: "posts", confirm: true })
 |------|--------|-------|
 | `list_X` | `limit`, `search`, enum filters | |
 | `get_X` | `id` | |
-| `mutate_X` | `action`, `id?`, `data?`, `confirm?` | Covers create / update / delete / preview |
+| `create_X` | typed fields from schema, `preview?`, `confirm?` | `preview: true` shows table, no write |
+| `update_X` | `id` + typed fields, `preview?`, `confirm?` | Shows diff if no `confirm` |
+| `delete_X` | `id`, `confirm?` | Shows warning if no `confirm` |
 
-**v0.4 aliases** (deprecated, removed in v0.6): `preview_create_X`, `create_X`, `preview_update_X`, `update_X`, `delete_X` — all forward to `mutate_X`.
+**Legacy mode** (`legacyMode: true`): registers `mutate_X` instead of the three write tools above.
 
 ### Media (always, if `"media"` key configured)
 `upload_media_from_url` · `list_media` · `delete_media`
@@ -410,11 +479,15 @@ The `media` key is reserved for these dedicated tools (multipart upload, SSRF-ha
 ### Introspection (always)
 `discover_api` · `apply_discovered_endpoints` · `inspect_endpoint_schema` · `refresh_resource_schema` · `list_configured_endpoints` · `cache_stats` · `clear_cache`
 
+### Policy tools (always available)
+`check_policies` · `init_policies`
+
+Always registered. Without `"policies"` in config, they respond with a helpful setup message. With `"policies"` set, they use the loaded rules — and those same rules **auto-enforce** on every `create_X`, `update_X`, and `delete_X` call.
+
 ### Optional plugin tools
 
 | Plugin | Tools registered |
 |--------|-----------------|
-| Policy (`"policies"`) | `check_policies` · `init_policies` |
 | Search (`"schemaCache"`) | `semantic_search` · `sync_all_content` · `knowledge_status` |
 | GitHub (`"github"`) | `scan_repo` · `sync_repo_to_project` · `list_repos` |
 
@@ -443,13 +516,13 @@ Or in config:
 {
   "approvals": {
     "port": 2323,
-    "tools": ["mutate_posts", "mutate_products"]
+    "tools": ["delete_posts", "delete_products", "create_posts"]
   }
 }
 ```
 
 **Flow:**
-1. Claude calls `mutate_posts({ action: "delete", id: "42", confirm: true })`
+1. Claude calls `delete_posts({ id: "42", confirm: true })`
 2. cms-mcp prints: `Approval required — open http://localhost:2323`
 3. Browser shows the diff preview with Approve / Reject buttons
 4. You click Approve → write executes
@@ -487,7 +560,7 @@ See [docs/advanced/vector-search.md](./docs/advanced/vector-search.md).
 
 ### Policy Engine
 
-Enforce publishing standards with `cms-mcp.policies.json`:
+Enforce publishing standards with `cms-mcp.policies.json`. Policies are **automatically enforced** on every `create_X`, `update_X`, and `delete_X` call — no manual `check_policies` step needed.
 
 ```json
 {
@@ -496,22 +569,24 @@ Enforce publishing standards with `cms-mcp.policies.json`:
     {
       "type": "required_fields",
       "fields": ["cover_image", "seo_title", "seo_description"],
-      "tools": ["mutate_posts"]
+      "tools": ["update_posts", "update_projects"]
     },
     {
       "type": "forbidden_words",
-      "fields": ["title", "body"],
+      "field": "body",
       "words": ["TODO", "lorem ipsum"],
-      "tools": ["mutate_posts"]
+      "tools": ["create_posts", "update_posts"]
     },
     {
       "type": "min_tags",
       "min": 2,
-      "tools": ["mutate_posts"]
+      "tools": ["create_projects", "update_projects"]
     }
   ]
 }
 ```
+
+Rule `tools` arrays accept v1.0.0 names (`create_X`, `update_X`, `delete_X`) **or** legacy names (`mutate_X`) — they match interchangeably. Rules without a `tools` array apply to all write tools.
 
 All 10 rule types: `required_fields`, `min_tags`, `max_tags`, `min_length`, `max_length`, `forbidden_words`, `require_cover_image`, `seo_required`, `regex_match`, `status_transition`
 
@@ -548,8 +623,10 @@ CLOSED → (5 failures) → OPEN → (30s) → HALF-OPEN → test → CLOSED
 
 | Protection | Detail |
 |-----------|--------|
-| **SSRF** | Blocks private IPs (RFC 1918), loopback, link-local, AWS metadata, IPv6 ULA, non-HTTP schemes |
-| **No redirect following** | `redirect: "error"` on all fetch calls — prevents auth header leakage |
+| **SSRF v2** | Blocks private IPs (RFC 1918), loopback, AWS/GCP/Azure metadata (`169.254.169.254`), IPv6 ULA, non-HTTP schemes, null bytes |
+| **Port whitelist** | Only ports 80 and 443 allowed by default; add others via `allowedPorts: [3000, 8080]` |
+| **SecretManager** | Secrets tokenized after `loadConfig()` — plain-text credentials are never held in the Config object; resolved only at the moment of the HTTP call |
+| **No redirect following** | `redirect: "error"` on all fetch calls — prevents redirect-based SSRF and auth header leakage |
 | **Timeouts** | 30s `AbortController` on every outbound request |
 | **Media cap** | 50 MB upload limit — prevents memory exhaustion |
 | **Secret redaction** | Recursive regex-based redaction of all secret field names in audit logs |
@@ -598,7 +675,7 @@ docker run -v $(pwd)/cms-mcp.config.json:/app/config.json \
 docker compose up
 ```
 
-Multi-stage build — compiled JS + production deps only (~80MB image).
+Multi-stage Alpine build (`node:22-alpine`) — compiled JS + production deps only (~45MB image). Uses `dumb-init` for proper PID 1 signal handling.
 
 ---
 
@@ -607,9 +684,9 @@ Multi-stage build — compiled JS + production deps only (~80MB image).
 | Limitation | Detail | Workaround |
 |-----------|--------|------------|
 | **Tool shapes are fixed at connect time** | MCP tool schemas are registered during the handshake — schema changes require a server restart | Run `refresh_resource_schema` to update the SQLite cache, then restart |
-| **PATCH only for updates** | `update_X` always sends `PATCH`. APIs that require `PUT` will reject it | Map the endpoint to a custom wrapper that converts PATCH→PUT |
 | **No nested/relational writes** | Create tools only write top-level fields — no deep nested objects or join-table writes | Post top-level records, then use secondary tools for relations |
-| **Sampling misses rare fields** | Tier-3 sampling fetches 5 records — optional fields absent in all 5 are not included | Use OpenAPI spec (Tier 2) or add `discover_api` + `refresh_resource_schema` after adding records |
+| **Sampling can miss rare fields** | Tier-3 samples 20 records — optional fields absent in all 20 are not included (though they'd be `inconsistent: true` if present in any) | Use OpenAPI spec (Tier 2) or `discover_api` + `refresh_resource_schema` |
+| **CompensatingTransaction is not atomic** | REST APIs have no transaction primitive — rollback attempts individual DELETE/PATCH calls and may partially fail | On `CriticalInconsistencyError`, `orphanedIds` lists records that need manual cleanup |
 | **No pagination abstraction** | `list_X` fetches a single page — no cursor iteration across all pages | Pass `limit`/`page` args manually; or sync all content with `sync_all_content` |
 | **`media` key is reserved** | The key `"media"` always routes to the dedicated upload handler | Name your media endpoint `"media"` — it gets file upload tools automatically |
 | **Single base URL** | All endpoints share one `baseUrl` + auth config | Run a second cms-mcp instance for a second API |
@@ -618,6 +695,8 @@ Multi-stage build — compiled JS + production deps only (~80MB image).
 ---
 
 ## Migration
+
+See [docs/migration-v1.0.md](./docs/migration-v1.0.md) for upgrading from v0.5 to v1.0.
 
 See [docs/migration-v0.5.md](./docs/migration-v0.5.md) for upgrading from v0.4 to v0.5.
 
@@ -643,6 +722,7 @@ See [docs/migration-v0.4.md](./docs/migration-v0.4.md) for upgrading from v0.3.x
 | [Circuit Breaker](./docs/advanced/circuit-breaker.md) | API failure handling |
 | [Content Distillation](./docs/advanced/content-distillation.md) | HTML→Markdown |
 | [Security Guide](./docs/security.md) | Operator reference |
+| [Migration v1.0](./docs/migration-v1.0.md) | Upgrading from v0.5 to v1.0 (split tools, CMSAdapter, SecretManager) |
 | [Migration v0.5](./docs/migration-v0.5.md) | Upgrading from v0.4 to v0.5 |
 | [Migration v0.4](./docs/migration-v0.4.md) | Upgrading from v0.3.x to v0.4 |
 

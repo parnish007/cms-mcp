@@ -6,14 +6,16 @@
 //
 // Usage (from src/index.ts):
 //
-//   const pluginSummary = loadPlugins(server, config, audit, { vectorCache, breaker });
-//   // pluginSummary.active → string[] of active plugin names for the startup banner
+//   const { summary, policyEngine } = await loadPlugins(server, config, audit, { vectorCache, breaker });
+//   // summary.active → string[] of active plugin names for the startup banner
+//   // policyEngine   → PolicyEngine | null — passed to write tools for auto-enforcement
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Config } from "../lib/config.js";
 import type { AuditLogger } from "../lib/audit.js";
 import type { VectorCache } from "../lib/vector-cache.js";
 import type { CircuitBreaker } from "../lib/circuit-breaker.js";
+import type { PolicyEngine } from "./policy-engine.js";
 
 export { registerApprovalPlugin } from "./approval.js";
 export { registerPolicyPlugin } from "./policy.js";
@@ -29,13 +31,15 @@ export interface PluginDeps {
 
 export interface PluginSummary {
   active: string[];
+  policyEngine: PolicyEngine | null;
 }
 
 // ─── Unified loader ───────────────────────────────────────────────────────────
 
 /**
  * Load all configured optional plugins in one call.
- * Returns the list of active plugin names for the startup banner.
+ * Returns the list of active plugin names for the startup banner,
+ * and the PolicyEngine instance (if policies are configured) for write tools.
  */
 export async function loadPlugins(
   server: McpServer,
@@ -44,6 +48,16 @@ export async function loadPlugins(
   deps: PluginDeps,
 ): Promise<PluginSummary> {
   const active: string[] = [];
+  let policyEngine: PolicyEngine | null = null;
+
+  // Policy plugin — always registered so check_policies / init_policies are available.
+  // Returns the engine even when config.policies is absent (engine will be null,
+  // but the tools still respond with a helpful "not configured" message).
+  {
+    const { registerPolicyPlugin } = await import("./policy.js");
+    policyEngine = registerPolicyPlugin(server, config, audit);
+    if (policyEngine) active.push("policies");
+  }
 
   // Lazy imports so plugin modules don't pollute startup if not needed
   if (config.github) {
@@ -58,5 +72,5 @@ export async function loadPlugins(
     active.push(deps.vectorCache && (config.embedding?.provider === "openai") ? "openai-embeddings" : "tfidf-search");
   }
 
-  return { active };
+  return { active, policyEngine };
 }

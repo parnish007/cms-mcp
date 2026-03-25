@@ -219,7 +219,7 @@ function createHandler(
 
     // Process asynchronously
     if (event !== "push") {
-      console.error(`[webhook] Ignored non-push event: ${event}`);
+      process.stderr.write(`[webhook] Ignored non-push event: ${event}\n`);
       return;
     }
 
@@ -227,7 +227,7 @@ function createHandler(
     try {
       payload = JSON.parse(body.toString("utf-8"));
     } catch {
-      console.error("[webhook] Failed to parse payload JSON");
+      process.stderr.write("[webhook] Failed to parse payload JSON\n");
       return;
     }
 

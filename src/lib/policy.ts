@@ -126,7 +126,7 @@ export function loadPolicies(policyPath: string): PolicyFile {
     throw new Error(`[cms-mcp] Invalid policy file at ${policyPath}:\n${issues}`);
   }
 
-  console.error(`[cms-mcp] Loaded ${result.data.rules.length} policy rules from ${policyPath}`);
+  process.stderr.write(`[cms-mcp] Loaded ${result.data.rules.length} policy rules from ${policyPath}\n`);
   return result.data;
 }
 
@@ -315,13 +315,13 @@ export function buildExamplePolicies(): PolicyFile {
     rules: [
       {
         type: "required_fields",
-        tools: ["publish_blog", "publish_project"],
+        tools: ["update_posts", "update_projects"],
         fields: ["cover_image", "seo_title", "seo_description"],
         message: "Cover image and SEO fields are required before publishing",
       },
       {
         type: "min_tags",
-        tools: ["create_project", "update_project", "publish_project"],
+        tools: ["create_projects", "update_projects"],
         min: 2,
         field: "tags",
         message: "Projects must have at least 2 tags",
@@ -338,14 +338,14 @@ export function buildExamplePolicies(): PolicyFile {
       },
       {
         type: "forbidden_words",
-        tools: ["create_blog", "update_blog", "create_project", "update_project"],
+        tools: ["create_posts", "update_posts", "create_projects", "update_projects"],
         field: "body",
         words: ["lorem ipsum", "placeholder", "TODO", "FIXME"],
         message: "Content contains placeholder text — replace before saving",
       },
       {
         type: "seo_required",
-        tools: ["publish_blog", "publish_project"],
+        tools: ["update_posts", "update_projects"],
         fields: ["seo_title", "seo_description"],
       },
     ],

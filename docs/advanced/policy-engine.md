@@ -11,6 +11,20 @@ When multiple agents or team members can write to your CMS through Claude, you n
 - Projects with fewer than the required number of tags
 - Accidental status transitions (e.g., draft → archived)
 
+## How auto-enforcement works
+
+Starting in v1.0.0, policies are **automatically enforced** on every write call — no manual `check_policies` step needed.
+
+**Enforcement order on every `create_X`, `update_X`, `delete_X` (or legacy `mutate_X`):**
+
+1. Zod input validation (tool schema)
+2. ✅ **Policy engine** — if any rule is violated, the write is blocked and violations are returned
+3. Diff preview shown (if requested)
+4. Approval gate (if configured)
+5. API call
+
+If policies are violated, Claude receives the full violation list and can ask the user for the missing fields before retrying.
+
 ## Setup
 
 **1. Generate an example policy file:**
@@ -29,7 +43,7 @@ Args: { "output_path": "./cms-mcp.policies.json", "confirm": true }
 {
   "baseUrl": "https://yoursite.com/api",
   "auth": { "type": "bearer", "token": "env:CMS_API_TOKEN" },
-  "endpoints": { "projects": "/projects", "blogs": "/blogs" },
+  "endpoints": { "projects": "/projects", "posts": "/posts" },
   "policies": "./cms-mcp.policies.json"
 }
 ```
@@ -45,19 +59,20 @@ Args: { "output_path": "./cms-mcp.policies.json", "confirm": true }
   "rules": [
     {
       "type": "required_fields",
-      "tools": ["publish_blog", "publish_project"],
+      "tools": ["update_posts", "update_projects"],
       "fields": ["cover_image", "seo_title", "seo_description"],
       "message": "Cover image and SEO fields are required before publishing"
     },
     {
       "type": "min_tags",
-      "tools": ["create_project", "publish_project"],
+      "tools": ["create_projects", "update_projects"],
       "min": 3,
       "field": "tags",
       "message": "Projects must have at least 3 tags for discoverability"
     },
     {
       "type": "forbidden_words",
+      "tools": ["create_posts", "update_posts", "create_projects", "update_projects"],
       "field": "body",
       "words": ["lorem ipsum", "TODO", "FIXME", "placeholder"],
       "message": "Content contains placeholder text — replace before saving"
@@ -74,7 +89,7 @@ Args: { "output_path": "./cms-mcp.policies.json", "confirm": true }
     },
     {
       "type": "seo_required",
-      "tools": ["publish_blog", "publish_project"],
+      "tools": ["update_posts", "update_projects"],
       "fields": ["seo_title", "seo_description"]
     },
     {
@@ -88,7 +103,7 @@ Args: { "output_path": "./cms-mcp.policies.json", "confirm": true }
       "field": "title",
       "pattern": "test|demo|draft",
       "invert": true,
-      "tools": ["publish_blog", "publish_project"],
+      "tools": ["update_posts", "update_projects"],
       "message": "Title must not contain 'test', 'demo', or 'draft' when publishing"
     },
     {
@@ -126,12 +141,31 @@ All rules support:
 - **`tools`** — Array of tool names this rule applies to. Omit to apply to all write tools.
 - **`message`** — Custom violation message shown to Claude.
 
+## Tool name aliases
+
+The `tools` array accepts both v1.0.0 split-tool names and the v0.5 legacy `mutate_X` name interchangeably. The policy engine resolves them automatically:
+
+| Name in `tools` array | Also matches |
+|----------------------|--------------|
+| `create_posts` | `mutate_posts` (legacy) |
+| `update_posts` | `mutate_posts` (legacy) |
+| `mutate_posts` | `create_posts` and `update_posts` |
+| `delete_posts` | *(no aliases — delete never inherits mutate rules)* |
+
+This means you can write one set of rules and they work whether users are on v1.0.0 split tools or legacy `mutate_X` mode.
+
+## Field names in policies
+
+Policies always check **internal (Claude-side) field names** — the left-hand side of any `adapters.X.fieldMap` you have configured. The CMSAdapter transformation runs *after* policy enforcement, so you never need to use the external API field names in your policy rules.
+
 ## Checking policies manually
+
+`check_policies` is always available (even without `"policies"` configured). Use it to dry-run a payload before committing a write:
 
 ```
 Tool: check_policies
 Args: {
-  "tool": "publish_blog",
+  "tool": "update_posts",
   "data": {
     "title": "My Post",
     "body": "Content here...",
@@ -151,4 +185,18 @@ Fix the above before this operation can proceed.
 
 ## How violations look to Claude
 
-When a policy blocks a write, Claude sees a clear error with all violations listed. It can then ask the user for the missing fields before retrying.
+When a policy blocks a write, Claude receives a structured violation list:
+
+```
+❌ Policy violations (2):
+  • [required_fields] Cover image and SEO fields are required before publishing
+  • [seo_required] SEO fields required: `seo_title`, `seo_description`
+
+Fix the above before this operation can proceed.
+```
+
+Claude will then ask the user for the missing fields and retry the write once they're provided.
+
+## Hot-reload
+
+Ask Claude: `"Reload the policy rules"` — or use the `reload()` method if building custom tooling. No restart required to pick up policy file changes.

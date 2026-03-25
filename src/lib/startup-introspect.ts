@@ -9,13 +9,13 @@
 //
 //   Tier 1 — SQLite cache hit → use immediately (instant startup, no API calls)
 //   Tier 2 — OpenAPI spec available → extract schema from spec ($ref-resolved)
-//   Tier 3 — Live sampling → fetch 5 records, infer types from values
+//   Tier 3 — Live sampling → fetch 20 records, merge fields, infer types
 //   Tier 4 — Cold-start → passthrough mode (no schema, fields: Record<unknown>)
 //
 // Why OpenAPI first?
-//   - Sampling infers types from up to 5 records. Optional fields that happen
-//     to be null in all 5 samples are missed. Single-sample enum detection fails.
-//     New/empty endpoints fall through to cold-start.
+//   - Sampling infers types from up to 20 records. Fields absent in every sample
+//     are missed; fields absent in some records get `inconsistent: true` and
+//     always use .optional() — schema merging reduces false "required" errors.
 //   - OpenAPI declares every field, type, format, enum, required/optional, and
 //     readOnly flag — zero false positives, no missing fields.
 //
@@ -44,6 +44,7 @@ import { openApiCacheKey } from "./schema-cache.js";
 import type { OpenApiDiscoveryResult } from "./openapi.js";
 import { extractSchemaFromOpenApi } from "../schema/openapi-parser.js";
 import { detectRelations } from "./relation-detector.js";
+import type { PolicyEngine } from "../plugins/policy-engine.js";
 
 // Keys that have dedicated tool files — skip the generic factory for these.
 const RESERVED_KEYS = new Set(["media"]);
@@ -75,6 +76,7 @@ export async function introspectAndRegisterAll(
   audit: AuditLogger,
   gate: ApprovalGate | null | undefined,
   cache: SchemaCache | undefined,
+  policyEngine?: PolicyEngine | null,
 ): Promise<IntrospectSummary> {
   const summary: IntrospectSummary = {
     registered:  [],
@@ -88,53 +90,54 @@ export async function introspectAndRegisterAll(
   const endpointEntries = Object.entries(config.endpoints as Record<string, string | undefined>);
 
   if (endpointEntries.length === 0) {
-    console.error("[cms-mcp] No endpoints configured — generic tools disabled.");
+    process.stderr.write("[cms-mcp] No endpoints configured — generic tools disabled.\n");
     return summary;
   }
 
   // Load cached OpenAPI discovery result (if available) for tier-2 schema extraction
   const openApiCached = cache?.get<OpenApiDiscoveryResult>(openApiCacheKey(config.baseUrl)) ?? null;
 
-  for (const [key, url] of endpointEntries) {
-    if (!url) {
-      summary.skipped.push(key);
-      continue;
-    }
-    if (RESERVED_KEYS.has(key)) {
-      summary.skipped.push(key);
-      continue;
-    }
+  // Collect all endpoint keys for relation hint detection (before parallel work)
+  const allKeys = endpointEntries.map(([k]) => k);
 
-    try {
-      const { schema, tier } = await resolveSchema(
-        client, key, url, config.baseUrl, cache, openApiCached,
-      );
-
-      // Attach relation hints (cross-endpoint FK detection)
-      const allKeys = endpointEntries.map(([k]) => k);
-      schema.relationHints = detectRelations(schema.fields, allKeys, key);
-
-      registerGenericResourceTools(server, config, audit, gate, schema);
-
-      if (schema.source === "cold-start") {
-        summary.coldStart.push(key);
-      } else {
-        summary.registered.push(key);
-        if (tier === "openapi") summary.fromOpenApi.push(key);
+  // Introspect all endpoints in parallel — significantly faster for 5+ endpoints
+  await Promise.all(
+    endpointEntries.map(async ([key, url]) => {
+      if (!url || RESERVED_KEYS.has(key)) {
+        summary.skipped.push(key);
+        return;
       }
 
-      console.error(
-        `[cms-mcp] Registered tools for "${key}" ` +
-        `[tier: ${tier}, source: ${schema.source}, fields: ${schema.fields.length}, records: ${schema.recordCount}]`,
-      );
-    } catch (err) {
-      console.error(
-        `[cms-mcp] Failed to register tools for "${key}": ` +
-        `${(err as Error).message?.slice(0, 120) ?? "unknown error"}`,
-      );
-      summary.failed.push(key);
-    }
-  }
+      try {
+        const { schema, tier } = await resolveSchema(
+          client, key, url, config.baseUrl, cache, openApiCached,
+        );
+
+        // Attach relation hints (cross-endpoint FK detection)
+        schema.relationHints = detectRelations(schema.fields, allKeys, key);
+
+        registerGenericResourceTools(server, config, audit, gate, schema, policyEngine);
+
+        if (schema.source === "cold-start") {
+          summary.coldStart.push(key);
+        } else {
+          summary.registered.push(key);
+          if (tier === "openapi") summary.fromOpenApi.push(key);
+        }
+
+        process.stderr.write(
+          `[cms-mcp] Registered tools for "${key}" ` +
+          `[tier: ${tier}, source: ${schema.source}, fields: ${schema.fields.length}, records: ${schema.recordCount}]\n`,
+        );
+      } catch (err) {
+        process.stderr.write(
+          `[cms-mcp] Failed to register tools for "${key}": ` +
+          `${(err as Error).message?.slice(0, 120) ?? "unknown error"}\n`,
+        );
+        summary.failed.push(key);
+      }
+    }),
+  );
 
   return summary;
 }
@@ -157,7 +160,7 @@ async function resolveSchema(
   if (cache) {
     const cached = cache.get<ResourceSchema>(cacheKey);
     if (cached) {
-      console.error(`[cms-mcp] Schema for "${resourceKey}" loaded from cache.`);
+      process.stderr.write(`[cms-mcp] Schema for "${resourceKey}" loaded from cache.\n`);
       return { schema: { ...cached, source: "cached" }, tier: "cache" };
     }
   }
@@ -178,10 +181,10 @@ async function resolveSchema(
         source:      "live", // "live" = reliably sourced (spec counts as live)
       };
       cache?.set(cacheKey, schema);
-      console.error(`[cms-mcp] Schema for "${resourceKey}" extracted from OpenAPI spec (${result.fields.length} fields via ${result.sourcePath}).`);
+      process.stderr.write(`[cms-mcp] Schema for "${resourceKey}" extracted from OpenAPI spec (${result.fields.length} fields via ${result.sourcePath}).\n`);
       return { schema, tier: "openapi" };
     }
-    console.error(`[cms-mcp] OpenAPI spec found but no schema for "${resourceKey}" — falling back to sampling.`);
+    process.stderr.write(`[cms-mcp] OpenAPI spec found but no schema for "${resourceKey}" — falling back to sampling.\n`);
   }
 
   // ── Tier 3: Live sampling ─────────────────────────────────────────────────

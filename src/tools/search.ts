@@ -3,7 +3,7 @@
 // Uses the local vector cache (TF-IDF or OpenAI embeddings) to answer
 // natural-language queries without hitting the CMS API directly.
 //
-// sync_all_content is now GENERIC — syncs every configured endpoint,
+// sync_all_content is GENERIC — syncs every configured endpoint,
 // not just hardcoded "projects" and "blogs".
 
 import { z } from "zod";
@@ -26,15 +26,18 @@ export function registerSearchTools(
 
   // ── semantic_search ──────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "semantic_search",
     {
-      query: z.string().min(1).max(500)
-        .describe("Natural language query — e.g. 'dashboard project' or 'post about machine learning'"),
-      type: z.string().optional()
-        .describe("Filter by resource type (e.g. 'posts', 'projects'). Omit to search all."),
-      limit: z.number().int().min(1).max(20).default(5)
-        .describe("Maximum results to return"),
+      description: "Search your CMS content using natural language. Queries the local vector index built by sync_all_content. No live API call — instant results.",
+      inputSchema: {
+        query: z.string().min(1).max(500)
+          .describe("Natural language query — e.g. 'dashboard project' or 'post about machine learning'"),
+        type: z.string().optional()
+          .describe("Filter by resource type (e.g. 'posts', 'projects'). Omit to search all."),
+        limit: z.number().int().min(1).max(20).default(5)
+          .describe("Maximum results to return"),
+      },
     },
     async (args) => {
       return withAudit(audit, "semantic_search", args as Record<string, unknown>, async () => {
@@ -104,14 +107,17 @@ export function registerSearchTools(
   // Indexes ALL configured endpoints into the vector cache.
   // Generic — works with any endpoint key, not just hardcoded projects/blogs.
 
-  server.tool(
+  server.registerTool(
     "sync_all_content",
     {
-      endpoints: z.array(z.string()).optional()
-        .describe(
-          "Specific endpoint keys to sync (e.g. [\"posts\", \"projects\"]). " +
-          "Omit to sync all configured endpoints.",
-        ),
+      description: "Index all CMS content into the local vector cache for semantic_search. Fetches from all configured endpoints (or a specific subset).",
+      inputSchema: {
+        endpoints: z.array(z.string()).optional()
+          .describe(
+            "Specific endpoint keys to sync (e.g. [\"posts\", \"projects\"]). " +
+            "Omit to sync all configured endpoints.",
+          ),
+      },
     },
     async (args) => {
       return withAudit(audit, "sync_all_content", args as Record<string, unknown>, async () => {
@@ -206,9 +212,11 @@ export function registerSearchTools(
 
   // ── knowledge_status ──────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "knowledge_status",
-    {},
+    {
+      description: "Show the current state of the local vector index: entry count by type, vocabulary size, and circuit breaker status.",
+    },
     async () => {
       return withAudit(audit, "knowledge_status", {}, async () => {
         if (!vectorCache) {

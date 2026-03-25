@@ -9,7 +9,6 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Config } from "../lib/config.js";
 import { AuditLogger, withAudit } from "../lib/audit.js";
 import { discoverOpenApi, formatDiscoveryResult } from "../lib/openapi.js";
-import { loadPolicies, runPolicies, buildExamplePolicies } from "../lib/policy.js";
 import type { SchemaCache } from "../lib/schema-cache.js";
 import { openApiCacheKey } from "../lib/schema-cache.js";
 import { ApiClient } from "../lib/api-client.js";
@@ -28,13 +27,16 @@ export function registerIntrospectTools(
 
   // ── discover_api ──────────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "discover_api",
     {
-      force_refresh: z.boolean().default(false)
-        .describe("Bypass cache and re-fetch the OpenAPI spec"),
-      base_url: z.string().url().optional()
-        .describe("Override the baseUrl from config for discovery"),
+      description: "Probe your API for an OpenAPI/Swagger spec at common paths. Returns discovered resources, endpoint paths, and a suggested endpoints config block. Results are cached; use force_refresh: true to re-fetch.",
+      inputSchema: {
+        force_refresh: z.boolean().default(false)
+          .describe("Bypass cache and re-fetch the OpenAPI spec"),
+        base_url: z.string().url().optional()
+          .describe("Override the baseUrl from config for discovery"),
+      },
     },
     async (args) => {
       return withAudit(audit, "discover_api", args as Record<string, unknown>, async () => {
@@ -83,11 +85,14 @@ export function registerIntrospectTools(
 
   // ── apply_discovered_endpoints ────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "apply_discovered_endpoints",
     {
-      config_path: z.string().describe("Path to the cms-mcp.config.json to update"),
-      confirm:     z.literal(true).describe("Must be true to write changes to disk"),
+      description: "Write the endpoints discovered by discover_api into your cms-mcp.config.json. Merges with existing endpoints. Requires confirm: true.",
+      inputSchema: {
+        config_path: z.string().describe("Path to the cms-mcp.config.json to update"),
+        confirm:     z.literal(true).describe("Must be true to write changes to disk"),
+      },
     },
     async (args) => {
       if (config.readOnly) {
@@ -160,14 +165,17 @@ export function registerIntrospectTools(
   // ── inspect_endpoint_schema ───────────────────────────────────────────────
   // Now accepts ANY configured endpoint key — not limited to a hardcoded enum.
 
-  server.tool(
+  server.registerTool(
     "inspect_endpoint_schema",
     {
-      endpoint: z.string()
-        .describe(
-          "Endpoint key from your config to inspect (e.g. \"blogs\", \"projects\", \"products\"). " +
-          "Fetches live records and infers field types, enums, and required/optional status.",
-        ),
+      description: "Show the full schema for a configured endpoint — field names, types, required/optional status, examples. Uses OpenAPI spec if available (authoritative), otherwise samples up to 20 live records.",
+      inputSchema: {
+        endpoint: z.string()
+          .describe(
+            "Endpoint key from your config to inspect (e.g. \"blogs\", \"projects\", \"products\"). " +
+            "Fetches live records and infers field types, enums, and required/optional status.",
+          ),
+      },
     },
     async (args) => {
       return withAudit(audit, "inspect_endpoint_schema", args as Record<string, unknown>, async () => {
@@ -223,16 +231,19 @@ export function registerIntrospectTools(
   // CMS schema has changed. Note: registered MCP tool shapes do NOT change
   // until the server is restarted — this only updates the SQLite cache.
 
-  server.tool(
+  server.registerTool(
     "refresh_resource_schema",
     {
-      resource_key: z.string()
-        .describe(
-          "The endpoint key to re-introspect (e.g. \"blogs\", \"products\"). " +
-          "Invalidates the cached schema and fetches fresh field types from the live API.",
-        ),
-      confirm: z.literal(true)
-        .describe("Must be true to proceed"),
+      description: "Invalidate the SQLite cache for one endpoint and re-introspect: cache → OpenAPI → 20-record sampling → cold-start. Restart cms-mcp after to apply updated tool shapes.",
+      inputSchema: {
+        resource_key: z.string()
+          .describe(
+            "The endpoint key to re-introspect (e.g. \"blogs\", \"products\"). " +
+            "Invalidates the cached schema and fetches fresh field types from the live API.",
+          ),
+        confirm: z.literal(true)
+          .describe("Must be true to proceed"),
+      },
     },
     async (args) => {
       return withAudit(audit, "refresh_resource_schema", args as Record<string, unknown>, async () => {
@@ -300,9 +311,11 @@ export function registerIntrospectTools(
   // ── list_configured_endpoints ─────────────────────────────────────────────
   // Quick overview of what endpoints are configured and which have schemas cached.
 
-  server.tool(
+  server.registerTool(
     "list_configured_endpoints",
-    {},
+    {
+      description: "Show a table of all configured endpoints with URL and schema cache status.",
+    },
     async (_args) => {
       return withAudit(audit, "list_configured_endpoints", {}, async () => {
         const endpoints = config.endpoints as Record<string, string | undefined>;
@@ -338,8 +351,8 @@ export function registerIntrospectTools(
         lines.push(
           ``,
           `Tools generated per endpoint (except \`media\`): ` +
-          `\`list_X\`, \`get_X\`, \`preview_create_X\`, \`create_X\`, ` +
-          `\`preview_update_X\`, \`update_X\`, \`delete_X\``,
+          `\`list_X\`, \`get_X\`, \`create_X\`, \`update_X\`, \`delete_X\`` +
+          ` (or \`mutate_X\` when \`legacyMode: true\`)`,
         );
 
         return {
@@ -349,85 +362,13 @@ export function registerIntrospectTools(
     },
   );
 
-  // ── check_policies ────────────────────────────────────────────────────────
-
-  server.tool(
-    "check_policies",
-    {
-      tool: z.string().describe("The write tool name to check against (e.g. 'publish_blogs')"),
-      data: z.record(z.unknown()).describe("The data payload to validate against policies"),
-    },
-    async (args) => {
-      return withAudit(audit, "check_policies", args as Record<string, unknown>, async () => {
-        if (!config.policies) {
-          return {
-            content: [{
-              type: "text" as const,
-              text: "No policies file configured. Add `\"policies\": \"./cms-mcp.policies.json\"` to your config.",
-            }],
-          };
-        }
-
-        const policies = loadPolicies(config.policies);
-        const result = runPolicies(policies, args.tool, args.data as Record<string, unknown>);
-
-        return {
-          content: [{ type: "text" as const, text: result.formatted }],
-        };
-      });
-    },
-  );
-
-  // ── init_policies ─────────────────────────────────────────────────────────
-
-  server.tool(
-    "init_policies",
-    {
-      output_path: z.string().default("./cms-mcp.policies.json")
-        .describe("Where to write the example policies file"),
-      confirm: z.literal(true).describe("Must be true to write to disk"),
-    },
-    async (args) => {
-      if (config.readOnly) {
-        return { content: [{ type: "text" as const, text: "🔒 Disabled in read-only mode." }] };
-      }
-
-      return withAudit(audit, "init_policies", args as Record<string, unknown>, async () => {
-        if (existsSync(args.output_path)) {
-          return {
-            content: [{
-              type: "text" as const,
-              text: `Policy file already exists at ${args.output_path}. Delete it first or edit it directly.`,
-            }],
-          };
-        }
-
-        const example = buildExamplePolicies();
-        writeFileSync(args.output_path, JSON.stringify(example, null, 2) + "\n", "utf-8");
-
-        return {
-          content: [{
-            type: "text" as const,
-            text: [
-              `✅ Example policies written to ${args.output_path}`,
-              ``,
-              `Add this to cms-mcp.config.json:`,
-              `  "policies": "${args.output_path}"`,
-              ``,
-              `Then edit the rules to match your team's requirements.`,
-              `Use \`check_policies\` to test rules before committing.`,
-            ].join("\n"),
-          }],
-        };
-      });
-    },
-  );
-
   // ── cache_stats ───────────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "cache_stats",
-    {},
+    {
+      description: "Show SQLite schema cache statistics: entry count, expired count, and oldest entry age.",
+    },
     async (_args) => {
       return withAudit(audit, "cache_stats", {}, async () => {
         if (!cache) {
@@ -460,10 +401,13 @@ export function registerIntrospectTools(
 
   // ── clear_cache ───────────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "clear_cache",
     {
-      confirm: z.literal(true).describe("Must be true to clear all cache entries"),
+      description: "Delete all SQLite schema cache entries. Forces full re-introspection on next startup. Requires confirm: true.",
+      inputSchema: {
+        confirm: z.literal(true).describe("Must be true to clear all cache entries"),
+      },
     },
     async (_args) => {
       return withAudit(audit, "clear_cache", {}, async () => {

@@ -147,7 +147,7 @@ export function registerGitHubTools(
   const token = config.github?.token;
 
   if (!token) {
-    console.error("[cms-mcp] No GitHub token — GitHub tools disabled.");
+    process.stderr.write("[cms-mcp] No GitHub token — GitHub tools disabled.\n");
     return;
   }
 
@@ -155,10 +155,13 @@ export function registerGitHubTools(
 
   // ── scan_repo ──────────────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "scan_repo",
     {
-      repo_url: z.string().min(1).describe("GitHub repo URL or owner/repo (e.g. 'parnish007/scene-sorter')"),
+      description: "Scan a GitHub repo: reads README, detects tech stack, extracts description and recent commits. Use sync_repo_to_project to create a portfolio entry from the result.",
+      inputSchema: {
+        repo_url: z.string().min(1).describe("GitHub repo URL or owner/repo (e.g. 'owner/my-project')"),
+      },
     },
     async (args) => {
       return withAudit(audit, "scan_repo", args, async () => {
@@ -242,7 +245,7 @@ export function registerGitHubTools(
               ...result.timeline.map((t) => `- ${t.date}: ${t.message}`),
               ``,
               `---`,
-              `Use \`sync_repo_to_project\` with this data to create a portfolio entry, or \`preview_create_project\` to review first.`,
+              `Use \`sync_repo_to_project\` with this data to create a portfolio entry.`,
             ].join("\n"),
           }],
         };
@@ -252,12 +255,15 @@ export function registerGitHubTools(
 
   // ── sync_repo_to_project ───────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "sync_repo_to_project",
     {
-      repo_url: z.string().min(1).describe("GitHub repo URL or owner/repo"),
-      status: z.enum(["draft", "published"]).default("draft"),
-      confirm: z.literal(true).describe("Must be true to create the project entry"),
+      description: "Scan a GitHub repo and create a project record in your CMS from the extracted data. Requires confirm: true.",
+      inputSchema: {
+        repo_url: z.string().min(1).describe("GitHub repo URL or owner/repo"),
+        status:   z.enum(["draft", "published"]).default("draft"),
+        confirm:  z.literal(true).describe("Must be true to create the project entry"),
+      },
     },
     async (args) => {
       if (config.readOnly) {
@@ -314,7 +320,7 @@ export function registerGitHubTools(
               `**Status:** ${args.status}`,
               `**Tech Stack:** ${techStack.join(", ") || "(none detected)"}`,
               `**Repo:** ${projectData.repo_url}`,
-              args.status === "draft" ? `\nPost is saved as draft. Use \`publish_project\` to go live.` : `\nProject is now live!`,
+              args.status === "draft" ? `\nProject is saved as draft. Use \`update_projects\` to publish.` : `\nProject is now live!`,
             ].join("\n"),
           }],
         };
@@ -324,12 +330,15 @@ export function registerGitHubTools(
 
   // ── list_repos ─────────────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "list_repos",
     {
-      username: z.string().optional().describe("GitHub username (defaults to token owner)"),
-      limit: z.number().int().min(1).max(50).default(10),
-      sort: z.enum(["updated", "stars", "created"]).default("updated"),
+      description: "List GitHub repositories for a user or the authenticated token owner.",
+      inputSchema: {
+        username: z.string().optional().describe("GitHub username (defaults to token owner)"),
+        limit:    z.number().int().min(1).max(50).default(10),
+        sort:     z.enum(["updated", "stars", "created"]).default("updated"),
+      },
     },
     async (args) => {
       return withAudit(audit, "list_repos", args, async () => {

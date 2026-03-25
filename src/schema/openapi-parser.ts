@@ -5,8 +5,8 @@
 // OpenAPI 3.x / Swagger 2.x spec — no live API sampling required.
 //
 // Reliability vs sampling:
-//   - Sampling: infers types from 5 records — misses optional fields, gets enums
-//     wrong with single samples, fails on empty endpoints.
+//   - Sampling: infers types from up to 20 records — misses optional fields absent
+//     from all samples, gets enums wrong with single samples, fails on empty endpoints.
 //   - OpenAPI: declares all fields, types, formats, enums, required/optional,
 //     readOnly, and descriptions explicitly. Zero false positives.
 //
@@ -63,7 +63,7 @@ function resolveRef(
 ): JsonSchema | null {
   if (!ref.startsWith("#/")) return null;
   if (visited.has(ref)) {
-    console.error(`[openapi-parser] Circular $ref detected: ${ref} — skipping`);
+    process.stderr.write(`[openapi-parser] Circular $ref detected: ${ref} — skipping\n`);
     return null;
   }
   visited.add(ref);
