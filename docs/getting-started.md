@@ -65,11 +65,58 @@ The `env:` prefix means the value is read from an environment variable at runtim
 
 ---
 
-## Step 3 — Set environment variables
+## Step 3 — Get your API token and set environment variables
+
+The `"token": "env:CMS_API_TOKEN"` line in your config means: *read the token from the `CMS_API_TOKEN` environment variable at runtime*. You need to get a token from your CMS and make it available to cms-mcp.
+
+### What is `CMS_API_TOKEN`?
+
+It's an API token (also called an API key or access token) that your CMS issues to prove you're allowed to read and write data. **Where you get it depends on your CMS:**
+
+| CMS | Where to find the token |
+|-----|------------------------|
+| **Supabase** | Project Settings → API → `anon` or `service_role` key |
+| **Strapi** | Settings → API Tokens → Create new API Token |
+| **Directus** | Settings → Access Tokens → Create Token |
+| **PocketBase** | POST `/api/collections/users/auth-with-password` → copy `token` |
+| **Payload CMS** | Admin panel → Users → your user → API Key |
+| **Contentful** | Settings → API keys → Content Management API token |
+| **Sanity** | manage.sanity.io → API → Tokens → Add API token |
+| **Custom backend** | Whatever auth your backend requires (see full guide) |
+
+For step-by-step screenshots and curl commands for each platform, see the **[Environment Variables Guide](./env-vars.md)**.
+
+### Set the variable
+
+**For Claude Desktop / Claude Code (recommended):**
+
+Add it to the `env` block in your MCP server config — tokens never touch your project files:
+
+```json
+{
+  "mcpServers": {
+    "cms-mcp": {
+      "command": "npx",
+      "args": ["cms-mcp", "--config", "/path/to/cms-mcp.config.json"],
+      "env": {
+        "CMS_API_TOKEN": "paste-your-token-here"
+      }
+    }
+  }
+}
+```
+
+**For terminal use:**
 
 ```bash
-export CMS_API_TOKEN=your-api-token-here
+# macOS / Linux
+export CMS_API_TOKEN=your-token-here
+
+# Windows PowerShell
+$env:CMS_API_TOKEN="your-token-here"
 ```
+
+> Never put the raw token value in `cms-mcp.config.json` — use `"env:CMS_API_TOKEN"` and keep the real value in your shell or Claude config.
 
 ---
 
@@ -224,6 +271,7 @@ Claude: [calls get_posts to find it, then update_posts({ id: "ghi789", status: "
 
 ## Next steps
 
+- [Environment variables guide](./env-vars.md) — tokens for every CMS, how to set them
 - [Full configuration reference](./configuration.md)
 - [Generic resource tools](./tools/generic-resource.md)
 - [Introspection tools](./tools/introspection.md)

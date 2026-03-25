@@ -190,9 +190,24 @@ Or skip the manual config and let `init` detect your CMS:
 npx cms-mcp init --base-url https://your-api.com/api
 ```
 
-**2. Set environment variables:**
+**2. Get your API token and set it as an environment variable:**
+
+`CMS_API_TOKEN` is an API token issued by your CMS. Where to get it:
+
+| CMS | Where |
+|-----|-------|
+| Supabase | Project Settings → API → `anon` or `service_role` key |
+| Strapi | Settings → API Tokens → Create new API Token |
+| Directus | Settings → Access Tokens → Create Token |
+| PocketBase | POST `/api/collections/users/auth-with-password` → `token` field |
+| Payload CMS | Admin → Users → your user → API Key |
+| Custom backend | Whatever your backend requires |
+
+Full instructions for every platform: **[docs/env-vars.md](./docs/env-vars.md)**
+
 ```bash
 export CMS_API_TOKEN=your-token-here
+# or set it in the Claude Desktop/Code env block (recommended)
 ```
 
 **3. Add to Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
@@ -709,6 +724,7 @@ See [docs/migration-v0.4.md](./docs/migration-v0.4.md) for upgrading from v0.3.x
 | | |
 |-|-|
 | [Getting Started](./docs/getting-started.md) | Install, configure, first conversation |
+| [Environment Variables](./docs/env-vars.md) | What each env var is, how to get tokens from every CMS |
 | [Configuration](./docs/configuration.md) | Full config schema reference |
 | [Generic Resource Tools](./docs/tools/generic-resource.md) | How schema-driven tools work |
 | [Media Tools](./docs/tools/media.md) | Upload, list, delete |
