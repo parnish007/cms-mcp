@@ -39,134 +39,220 @@ This opens an interactive wizard: it HEAD-probes your API, auto-detects Supabase
 
 **Option B — Write it manually:**
 
-Create `cms-mcp.config.json` in your project root (or your home directory — see [Config search order](./configuration.md#config-file-search-order)):
+Create `cms-mcp.config.json` in your project root. If you're not sure how to create the file, pick one of these methods:
+
+**Windows (PowerShell) — create and open in Notepad:**
+```powershell
+notepad cms-mcp.config.json
+```
+Notepad will ask "File not found, create it?" — click **Yes**.
+
+**Open in VS Code directly:**
+```powershell
+code cms-mcp.config.json
+```
+
+**macOS / Linux:**
+```bash
+nano cms-mcp.config.json
+# or
+code cms-mcp.config.json
+```
+
+Paste this content — replacing the `baseUrl` with your actual API URL:
 
 ```json
 {
   "name": "My Portfolio",
-  "baseUrl": "https://my-portfolio.vercel.app/api",
+  "baseUrl": "https://your-domain.vercel.app/api/cms",
   "auth": {
-    "type": "bearer",
-    "token": "env:CMS_API_TOKEN"
+    "type": "api-key",
+    "header": "x-admin-api-secret",
+    "token": "env:ADMIN_API_SECRET"
   },
   "endpoints": {
     "projects": "/projects",
-    "posts":    "/posts",
+    "blogs":    "/blogs",
     "media":    "/media"
   },
   "schemaCache": { "path": "~/.cms-mcp/schema-cache.db", "ttlMinutes": 60 },
-  "auditLog": "~/.cms-mcp/audit.log"
+  "auditLog": "~/.cms-mcp/audit.log",
+  "approvals": {
+    "port":      2323,
+    "timeoutMs": 300000,
+    "tools":     ["delete_projects", "delete_blogs"]
+  }
 }
 ```
 
-Any endpoint key works. At startup, cms-mcp registers `list_projects`, `get_projects`, `create_projects`, `update_projects`, `delete_projects`, `list_posts`, `get_posts`, `create_posts`, etc. — tool shapes built from your API's actual fields.
-
-The `env:` prefix means the value is read from an environment variable at runtime — never hardcoded into the file.
+> **Important — understand the two-file system before continuing:**
 
 ---
 
-## Step 3 — Get your API token and set environment variables
+### The two-file system (read this carefully)
 
-The `"token": "env:CMS_API_TOKEN"` line in your config means: *read the token from the `CMS_API_TOKEN` environment variable at runtime*. You need to get a token from your CMS and make it available to cms-mcp.
+cms-mcp splits your configuration across **two files** on purpose — one safe to share, one that stays private.
 
-### What is `CMS_API_TOKEN`?
+```
+cms-mcp.config.json          ← SAFE. Only holds the variable NAME.
+claude_desktop_config.json   ← PRIVATE. Holds the actual secret VALUE.
+```
 
-It's an API token (also called an API key or access token) that your CMS issues to prove you're allowed to read and write data. **Where you get it depends on your CMS:**
+**`cms-mcp.config.json`** — never put your real secret here:
+```json
+"token": "env:ADMIN_API_SECRET"
+         ^^^  ^^^^^^^^^^^^^^^^
+         |    variable NAME (not the value)
+         tells cms-mcp to read from environment
+```
 
-| CMS | Where to find the token |
-|-----|------------------------|
+**`claude_desktop_config.json`** — the real value lives here:
+```json
+"env": {
+  "ADMIN_API_SECRET": "abc123youractualsecret"
+                       ^^^^^^^^^^^^^^^^^^^^^^
+                       the real value goes here
+}
+```
+
+When cms-mcp starts, it reads `env:ADMIN_API_SECRET` from the config, looks up the `ADMIN_API_SECRET` environment variable, and finds the real secret that Claude Desktop injected. **The config file itself never sees the secret.**
+
+**Common mistakes to avoid:**
+
+| Wrong | Right |
+|-------|-------|
+| `"token": "env:abc123yoursecret"` | `"token": "env:ADMIN_API_SECRET"` |
+| `"token": "abc123yoursecret"` | `"token": "env:ADMIN_API_SECRET"` |
+| Real secret in `cms-mcp.config.json` | Real secret only in Claude Desktop config |
+
+---
+
+Any endpoint key works. At startup, cms-mcp registers `list_projects`, `get_projects`, `create_projects`, `update_projects`, `delete_projects`, `list_blogs`, `get_blogs`, etc. — tool shapes built from your API's actual fields.
+
+---
+
+## Step 3 — Get your API token
+
+Your config file has `"token": "env:ADMIN_API_SECRET"`. This means cms-mcp will look for an environment variable called `ADMIN_API_SECRET` — you need to get the actual token value from your CMS and put it there.
+
+### Where to get your token
+
+| CMS / Backend | Where to find it |
+|---------------|-----------------|
 | **Supabase** | Project Settings → API → `anon` or `service_role` key |
 | **Strapi** | Settings → API Tokens → Create new API Token |
 | **Directus** | Settings → Access Tokens → Create Token |
 | **PocketBase** | POST `/api/collections/users/auth-with-password` → copy `token` |
 | **Payload CMS** | Admin panel → Users → your user → API Key |
+| **Custom Next.js backend** | Your `ADMIN_API_SECRET` env var value in your backend `.env` |
 | **Contentful** | Settings → API keys → Content Management API token |
 | **Sanity** | manage.sanity.io → API → Tokens → Add API token |
-| **Custom backend** | Whatever auth your backend requires (see full guide) |
 
-For step-by-step screenshots and curl commands for each platform, see the **[Environment Variables Guide](./env-vars.md)**.
+Full step-by-step for every platform: **[Environment Variables Guide](./env-vars.md)**
 
-### Set the variable
+### Where to put the token value
 
-**For Claude Desktop / Claude Code (recommended):**
-
-Add it to the `env` block in your MCP server config — tokens never touch your project files:
-
-```json
-{
-  "mcpServers": {
-    "cms-mcp": {
-      "command": "npx",
-      "args": ["cms-mcp", "--config", "/path/to/cms-mcp.config.json"],
-      "env": {
-        "CMS_API_TOKEN": "paste-your-token-here"
-      }
-    }
-  }
-}
-```
-
-**For terminal use:**
-
-```bash
-# macOS / Linux
-export CMS_API_TOKEN=your-token-here
-
-# Windows PowerShell
-$env:CMS_API_TOKEN="your-token-here"
-```
-
-> Never put the raw token value in `cms-mcp.config.json` — use `"env:CMS_API_TOKEN"` and keep the real value in your shell or Claude config.
+Once you have your token, **do NOT paste it into `cms-mcp.config.json`**. Put it in the Claude Desktop config instead (Step 4). The config file only holds the variable name — the real value goes in Claude Desktop.
 
 ---
 
 ## Step 4 — Connect to Claude Desktop
 
-Open your Claude Desktop config file:
+This step is where you paste your actual secret token. It lives here — not in `cms-mcp.config.json`.
+
+### 1. Open the Claude Desktop config file
 
 | Platform | Path |
 |----------|------|
-| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
 | Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
 | Linux | `~/.config/Claude/claude_desktop_config.json` |
 
-Add the `cms-mcp` server entry:
+Open it in Notepad (Windows):
+```powershell
+notepad "$env:APPDATA\Claude\claude_desktop_config.json"
+```
 
+### 2. Add the cms-mcp server entry
+
+**If you cloned the repo** (e.g. to `C:\Users\AB\cms-mcp`):
 ```json
 {
   "mcpServers": {
     "cms-mcp": {
-      "command": "cms-mcp",
+      "command": "node",
+      "args": [
+        "C:/Users/AB/cms-mcp/build/index.js",
+        "--config",
+        "C:/Users/AB/cms-mcp/cms-mcp.config.json"
+      ],
       "env": {
-        "CMS_API_TOKEN": "your-actual-api-token-here"
+        "ADMIN_API_SECRET": "your-actual-token-here"
       }
     }
   }
 }
 ```
 
-Restart Claude Desktop. You should see a hammer icon in the chat input — click it to confirm the tools are loaded.
+**If you installed via npm (`npm install -g cms-mcp`):**
+```json
+{
+  "mcpServers": {
+    "cms-mcp": {
+      "command": "cms-mcp",
+      "args": ["--config", "C:/Users/AB/cms-mcp/cms-mcp.config.json"],
+      "env": {
+        "ADMIN_API_SECRET": "your-actual-token-here"
+      }
+    }
+  }
+}
+```
+
+> Replace `your-actual-token-here` with the real token you got in Step 3.
+> Replace `ADMIN_API_SECRET` with whatever variable name you used in `cms-mcp.config.json` (after `env:`).
+
+### 3. How the two files connect
+
+```
+cms-mcp.config.json                  claude_desktop_config.json
+─────────────────────                ──────────────────────────────
+"token": "env:ADMIN_API_SECRET"  →   "ADMIN_API_SECRET": "abc123..."
+                  ↑                                        ↑
+          variable NAME here                     real VALUE here
+```
+
+### 4. Restart Claude Desktop
+
+Close it fully and reopen. You should see a hammer icon in the chat input — click it to confirm the tools are loaded.
+
+> **Tools not showing?** Check that the `args` paths use forward slashes (`/`) not backslashes, and that `build/index.js` exists in your cms-mcp folder.
 
 ---
 
 ## Step 5 — Connect to Claude Code CLI
 
-Add the server to your Claude Code project config at `.claude/settings.json`:
+Add to `.claude/settings.json` in your project — same two-file rule applies, real token goes in the `env` block:
 
 ```json
 {
   "mcpServers": {
     "cms-mcp": {
-      "command": "cms-mcp",
+      "command": "node",
+      "args": [
+        "C:/Users/AB/cms-mcp/build/index.js",
+        "--config",
+        "C:/Users/AB/cms-mcp/cms-mcp.config.json"
+      ],
       "env": {
-        "CMS_API_TOKEN": "your-actual-api-token-here"
+        "ADMIN_API_SECRET": "your-actual-token-here"
       }
     }
   }
 }
 ```
 
-Or add it from the command line:
+Or add via command line:
 
 ```bash
 claude mcp add cms-mcp -- npx cms-mcp --config ./cms-mcp.config.json
@@ -176,12 +262,103 @@ Verify the tools loaded:
 
 ```bash
 claude mcp list
-# cms-mcp  ● connected  (9 tools)
+# cms-mcp  ● connected
 ```
 
 ---
 
-## Step 6 — First conversations
+## Step 6 — (Optional) Enable GitHub plugin
+
+The GitHub plugin lets Claude scan your repos and sync them as portfolio projects:
+
+```
+"Scan my repo github.com/you/my-app and create a project from it"
+"List all my public repos"
+```
+
+### 1. Get a GitHub token
+
+1. Go to **[github.com/settings/tokens](https://github.com/settings/tokens)**
+2. Click **"Generate new token (classic)"**
+3. Give it a name like `cms-mcp`
+4. Select scopes:
+   - `repo` — for private repos
+   - `public_repo` — for public repos only (safer)
+5. Click **"Generate token"** → copy the value (starts with `ghp_`)
+
+> You only see the token once — copy it immediately.
+
+### 2. Add `github` block to `cms-mcp.config.json`
+
+Open `C:\Users\AB\cms-mcp\cms-mcp.config.json` and add the `github` block:
+
+```json
+{
+  "name": "Portfolio",
+  "baseUrl": "https://your-domain.vercel.app/api/cms",
+  "auth": {
+    "type": "api-key",
+    "header": "x-admin-api-secret",
+    "token": "env:ADMIN_API_SECRET"
+  },
+  "endpoints": {
+    "projects": "/projects",
+    "blogs":    "/blogs",
+    "media":    "/media"
+  },
+  "github": {
+    "token":        "env:GITHUB_TOKEN",
+    "defaultOwner": "your-github-username"
+  },
+  "schemaCache": { "path": "~/.cms-mcp/schema-cache.db", "ttlMinutes": 60 },
+  "auditLog": "~/.cms-mcp/audit.log"
+}
+```
+
+Same rule — `"env:GITHUB_TOKEN"` is the variable **name**, not the value.
+
+### 3. Add `GITHUB_TOKEN` to Claude Desktop config
+
+Open `%APPDATA%\Claude\claude_desktop_config.json` and add `GITHUB_TOKEN` to the `env` block:
+
+```json
+{
+  "mcpServers": {
+    "cms-mcp": {
+      "command": "node",
+      "args": [
+        "C:/Users/AB/cms-mcp/build/index.js",
+        "--config",
+        "C:/Users/AB/cms-mcp/cms-mcp.config.json"
+      ],
+      "env": {
+        "ADMIN_API_SECRET": "your-actual-secret-here",
+        "GITHUB_TOKEN":     "ghp_xxxxxxxxxxxxxxxxxxxx"
+      }
+    }
+  }
+}
+```
+
+### 4. Restart Claude Desktop
+
+Once restarted, these tools become available:
+
+| Tool | What it does |
+|------|-------------|
+| `scan_repo` | Reads a GitHub repo — README, tech stack, description |
+| `sync_repo_to_project` | Creates a draft project in your CMS from a scanned repo |
+| `list_repos` | Lists your GitHub repos |
+
+**Try it:**
+```
+You: Scan github.com/your-username/your-repo and add it as a project
+Claude: [scans repo → creates draft project] ✅
+```
+
+---
+
+## Step 7 — First conversations
 
 Once connected, you can talk to Claude naturally. Here are examples to try immediately.
 

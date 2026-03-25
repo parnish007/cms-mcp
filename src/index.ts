@@ -37,6 +37,19 @@ import { loadPlugins } from "./plugins/index.js";
 
 const argv = process.argv.slice(2);
 
+const readOnlyFlag   = argv.includes("--readonly") || argv.includes("--read-only");
+const webhookFlag    = argv.includes("--webhook");
+const noDiscoverFlag = argv.includes("--no-discover");
+const approvalFlag   = argv.includes("--approval");
+
+const configFlag = (() => {
+  const idx = argv.findIndex((a) => a === "--config" || a === "-c");
+  if (idx === -1) return undefined;
+  const next = argv[idx + 1];
+  // Guard: next token must exist and not be another flag
+  return next && !next.startsWith("-") ? next : undefined;
+})();
+
 // `npx cms-mcp init` — run setup wizard and exit
 if (argv[0] === "init") {
   const configIdx  = argv.findIndex((a) => a === "--config" || a === "-c");
@@ -54,19 +67,6 @@ if (argv[0] === "init") {
     process.exit(1);
   });
 }
-
-const readOnlyFlag   = argv.includes("--readonly") || argv.includes("--read-only");
-const webhookFlag    = argv.includes("--webhook");
-const noDiscoverFlag = argv.includes("--no-discover");
-const approvalFlag   = argv.includes("--approval");
-
-const configFlag = (() => {
-  const idx = argv.findIndex((a) => a === "--config" || a === "-c");
-  if (idx === -1) return undefined;
-  const next = argv[idx + 1];
-  // Guard: next token must exist and not be another flag
-  return next && !next.startsWith("-") ? next : undefined;
-})();
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 

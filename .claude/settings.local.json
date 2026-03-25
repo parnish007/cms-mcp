@@ -8,7 +8,10 @@
       "Bash(find /c/Users/AB/Desktop/Projects/cms-mcp/src -type f -name *.ts)",
       "Bash(find /c/Users/AB/Desktop/Projects/cms-mcp -name *.md -type f)",
       "Bash(grep -E '\\(^[^/]*\\\\.md$|/docs/|/src/\\)')",
-      "Bash(ls \"C:\\\\Users\\\\AB\\\\.claude\\\\projects\\\\c--Users-AB-Desktop-Projects-cms-mcp\\\\memory\"\" 2>/dev/null && cat \"C:UsersAB.claudeprojectsc--Users-AB-Desktop-Projects-cms-mcpmemoryMEMORY.md\" 2>/dev/null || echo \"MEMORY.md not found \")"
+      "Bash(ls \"C:\\\\Users\\\\AB\\\\.claude\\\\projects\\\\c--Users-AB-Desktop-Projects-cms-mcp\\\\memory\"\" 2>/dev/null && cat \"C:UsersAB.claudeprojectsc--Users-AB-Desktop-Projects-cms-mcpmemoryMEMORY.md\" 2>/dev/null || echo \"MEMORY.md not found \")",
+      "Bash(node -e \":*)",
+      "Bash(echo \"exit:$?\")",
+      "Bash(node build/index.js --config \"nonexistent.json\")"
     ]
   }
 }
