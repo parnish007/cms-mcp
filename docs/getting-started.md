@@ -276,21 +276,24 @@ The GitHub plugin lets Claude scan your repos and sync them as portfolio project
 "List all my public repos"
 ```
 
-### 1. Get a GitHub token
+> **Warning — both pieces required together:**
+> If you add the `github` block to your config but forget to add `GITHUB_TOKEN` to the Claude Desktop `env` block (or vice versa), the **entire server crashes on startup** — not just the GitHub tools. Do Steps 1–4 together, or skip this step entirely until you're ready.
+
+### 1. Get a GitHub Personal Access Token
 
 1. Go to **[github.com/settings/tokens](https://github.com/settings/tokens)**
 2. Click **"Generate new token (classic)"**
 3. Give it a name like `cms-mcp`
 4. Select scopes:
-   - `repo` — for private repos
-   - `public_repo` — for public repos only (safer)
+   - `public_repo` — public repos only (safer, recommended)
+   - `repo` — if you want to scan private repos too
 5. Click **"Generate token"** → copy the value (starts with `ghp_`)
 
-> You only see the token once — copy it immediately.
+> You only see the token **once**. Copy it before closing the page.
 
 ### 2. Add `github` block to `cms-mcp.config.json`
 
-Open `C:\Users\AB\cms-mcp\cms-mcp.config.json` and add the `github` block:
+Open your `cms-mcp.config.json` and add the `github` block:
 
 ```json
 {
@@ -308,18 +311,22 @@ Open `C:\Users\AB\cms-mcp\cms-mcp.config.json` and add the `github` block:
   },
   "github": {
     "token":        "env:GITHUB_TOKEN",
-    "defaultOwner": "your-github-username"
+    "defaultOwner": "your-actual-github-username"
   },
   "schemaCache": { "path": "~/.cms-mcp/schema-cache.db", "ttlMinutes": 60 },
   "auditLog": "~/.cms-mcp/audit.log"
 }
 ```
 
-Same rule — `"env:GITHUB_TOKEN"` is the variable **name**, not the value.
+Two things to get right:
+- `"env:GITHUB_TOKEN"` — this is the variable **name**, not the token value (same pattern as `ADMIN_API_SECRET`)
+- `"defaultOwner"` — replace `"your-actual-github-username"` with your real GitHub username (e.g. `"parnish007"`)
 
 ### 3. Add `GITHUB_TOKEN` to Claude Desktop config
 
-Open `%APPDATA%\Claude\claude_desktop_config.json` and add `GITHUB_TOKEN` to the `env` block:
+Open `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS).
+
+Add `GITHUB_TOKEN` to the **same `env` block** as `ADMIN_API_SECRET`:
 
 ```json
 {
@@ -327,12 +334,12 @@ Open `%APPDATA%\Claude\claude_desktop_config.json` and add `GITHUB_TOKEN` to the
     "cms-mcp": {
       "command": "node",
       "args": [
-        "C:/Users/AB/cms-mcp/build/index.js",
+        "C:/Users/YourName/cms-mcp/build/index.js",
         "--config",
-        "C:/Users/AB/cms-mcp/cms-mcp.config.json"
+        "C:/Users/YourName/cms-mcp/cms-mcp.config.json"
       ],
       "env": {
-        "ADMIN_API_SECRET": "your-actual-secret-here",
+        "ADMIN_API_SECRET": "your-actual-admin-secret",
         "GITHUB_TOKEN":     "ghp_xxxxxxxxxxxxxxxxxxxx"
       }
     }
@@ -340,9 +347,11 @@ Open `%APPDATA%\Claude\claude_desktop_config.json` and add `GITHUB_TOKEN` to the
 }
 ```
 
+Replace `ghp_xxxxxxxxxxxxxxxxxxxx` with the token you copied in Step 1.
+
 ### 4. Restart Claude Desktop
 
-Once restarted, these tools become available:
+Fully quit (system tray → Quit) and reopen. These tools will appear:
 
 | Tool | What it does |
 |------|-------------|
@@ -355,6 +364,15 @@ Once restarted, these tools become available:
 You: Scan github.com/your-username/your-repo and add it as a project
 Claude: [scans repo → creates draft project] ✅
 ```
+
+### Quick troubleshooting
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `Environment variable "GITHUB_TOKEN" is required but not set` | `github` block is in config but token missing from Claude Desktop env | Add `"GITHUB_TOKEN": "ghp_..."` to the `env` block |
+| `list_repos` returns nothing | `defaultOwner` is still `"your-github-username"` placeholder | Replace with your real GitHub username |
+| 404 on private repos | Token scope is `public_repo` | Regenerate with `repo` scope |
+| Want to disable GitHub temporarily | Remove the `github` block from config | The `GITHUB_TOKEN` env var can stay — it's ignored when the block is absent |
 
 ---
 

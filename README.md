@@ -127,7 +127,7 @@ All schemas are cached in SQLite — next startup hits Tier 1 instantly.
 | **Approval gate** | `"approvals": {...}` | Human click required before any write executes |
 | **Policy engine** | `"policies": "..."` | Auto-enforced on every write; `check_policies`, `init_policies` always available |
 | **Semantic search** | `"schemaCache"` + `"embedding"` | `sync_all_content`, `semantic_search`, `knowledge_status` |
-| **GitHub** | `"github": {...}` | `scan_repo`, `sync_repo_to_project`, `list_repos` |
+| **GitHub** | `"github": {...}` + `GITHUB_TOKEN` env var | `scan_repo`, `sync_repo_to_project`, `list_repos` — **omit the block entirely if not using; adding block without env var crashes the server** |
 | **Webhook** | `--webhook` + `"webhook": {...}` | Auto-draft on GitHub push |
 | **Circuit breaker** | always active | Cached fallback when CMS API goes down |
 | **Content distillation** | always active | HTML→Markdown for MCP Resources |

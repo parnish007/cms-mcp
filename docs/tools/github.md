@@ -2,14 +2,124 @@
 
 cms-mcp exposes 3 tools for interacting with GitHub repositories. These tools let Claude scan your repos, detect tech stacks, and auto-populate project entries in your CMS — eliminating the manual work of describing every project you've built.
 
-All GitHub tools require the `github` block to be configured:
+---
+
+## Before you start — read this
+
+The `github` block is **opt-in**. If you don't need GitHub tools, **don't add the block**. There is nothing to configure by default.
+
+> **Critical:** If you add the `github` block to your config but do **not** set `GITHUB_TOKEN` in the Claude Desktop `env` block, the server will **crash on startup** with:
+> ```
+> Config error: Environment variable "GITHUB_TOKEN" is required but not set.
+> ```
+> The entire server fails — not just the GitHub tools. Both pieces must be present together.
+
+**Rule:** Add the `github` block and set `GITHUB_TOKEN` at the same time, or don't add either.
+
+---
+
+## Setup (two files, same pattern as the main token)
+
+### Step 1 — Get a GitHub Personal Access Token
+
+1. Go to **[github.com/settings/tokens](https://github.com/settings/tokens)**
+2. Click **"Generate new token (classic)"**
+3. Name it something like `cms-mcp`
+4. Choose scopes:
+
+| What you need | Scope to select |
+|--------------|-----------------|
+| Public repos only | `public_repo` |
+| Private repos | `repo` (includes public) |
+| Org repos | `read:org` (in addition to above) |
+
+5. Click **Generate token** — copy the value immediately (starts with `ghp_`)
+
+> You only see the token once. If you close the page before copying, you must generate a new one.
+
+### Step 2 — Add `github` block to `cms-mcp.config.json`
 
 ```json
-"github": {
-  "token": "env:GITHUB_TOKEN",
-  "defaultOwner": "your-github-username"
+{
+  "name": "My Portfolio",
+  "baseUrl": "https://your-domain.vercel.app/api/cms",
+  "auth": {
+    "type": "api-key",
+    "header": "x-admin-api-secret",
+    "token": "env:ADMIN_API_SECRET"
+  },
+  "endpoints": {
+    "projects": "/projects",
+    "blogs":    "/blogs",
+    "media":    "/media"
+  },
+  "github": {
+    "token":        "env:GITHUB_TOKEN",
+    "defaultOwner": "your-actual-github-username"
+  }
 }
 ```
+
+`"env:GITHUB_TOKEN"` is the variable **name** — not the token value. The real token goes in Step 3.
+
+Replace `"your-actual-github-username"` with your real GitHub username (e.g. `"parnish007"`). This is used as the default when you say "list my repos" without specifying an owner.
+
+### Step 3 — Add `GITHUB_TOKEN` to Claude Desktop config
+
+Open `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) and add `GITHUB_TOKEN` to the `env` block alongside your existing secrets:
+
+```json
+{
+  "mcpServers": {
+    "cms-mcp": {
+      "command": "node",
+      "args": [
+        "C:/Users/YourName/cms-mcp/build/index.js",
+        "--config",
+        "C:/Users/YourName/cms-mcp/cms-mcp.config.json"
+      ],
+      "env": {
+        "ADMIN_API_SECRET": "your-actual-admin-secret",
+        "GITHUB_TOKEN":     "ghp_xxxxxxxxxxxxxxxxxxxx"
+      }
+    }
+  }
+}
+```
+
+### Step 4 — Restart Claude Desktop
+
+Fully quit (system tray → Quit) and reopen. The three GitHub tools will appear in the hammer menu.
+
+---
+
+## Common mistakes
+
+| Mistake | What happens | Fix |
+|---------|-------------|-----|
+| Added `github` block, forgot `GITHUB_TOKEN` in env | **Server crashes** — no tools load at all | Add `GITHUB_TOKEN` to Claude Desktop `env` block |
+| Added `GITHUB_TOKEN` to env, forgot `github` block | Token is ignored, no GitHub tools | Add `github` block to `cms-mcp.config.json` |
+| `"token": "env:ghp_xxxx..."` — put real value in config | Server looks for env var named `ghp_xxxx...` — fails | Put `"token": "env:GITHUB_TOKEN"` in config, real value in Claude Desktop env |
+| `"defaultOwner": "your-github-username"` — left as placeholder | `list_repos` fails when no owner specified | Replace with your real GitHub username |
+| Chose `public_repo` scope but repos are private | 404 errors on private repos | Regenerate token with `repo` scope |
+
+---
+
+## Removing GitHub (quick disable)
+
+If you want to temporarily disable GitHub tools without deleting your token, just remove (or comment out) the `github` block from `cms-mcp.config.json`. The `GITHUB_TOKEN` env var can stay in Claude Desktop — it's harmless when the config block is absent.
+
+---
+
+## Tool overview
+
+All GitHub tools require the `github` block to be configured (see setup above).
+
+| Tool | Type | Description |
+|------|------|-------------|
+| `list_repos` | Read | List repositories for a GitHub user/org |
+| `scan_repo` | Read | Analyze a repo and detect its tech stack |
+| `sync_repo_to_project` | Write | Create or update a CMS project from a repo scan |
 
 ---
 
