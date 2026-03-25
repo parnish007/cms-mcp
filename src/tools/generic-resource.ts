@@ -97,10 +97,11 @@ export function registerGenericResourceTools(
 
       const summary = items
         .slice(0, limit as number)
-        .map((item: Record<string, unknown>) => {
-          const id     = item[idField] ?? "?";
-          const title  = titleField  ? (item[titleField]  ?? "Untitled") : "(no title field)";
-          const status = statusField ? ` (${item[statusField] ?? "?"})` : "";
+        .map((item) => {
+          const i = item as Record<string, unknown>;
+          const id     = i[idField] ?? "?";
+          const title  = titleField  ? (i[titleField]  ?? "Untitled") : "(no title field)";
+          const status = statusField ? ` (${i[statusField] ?? "?"})` : "";
           return `• [${id}] ${title}${status}`;
         })
         .join("\n");

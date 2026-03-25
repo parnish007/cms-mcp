@@ -17,7 +17,7 @@ import type { VectorCache } from "../lib/vector-cache.js";
 import type { CircuitBreaker } from "../lib/circuit-breaker.js";
 import type { PolicyEngine } from "./policy-engine.js";
 
-export { registerApprovalPlugin } from "./approval.js";
+export { startApprovalPlugin } from "./approval.js";
 export { registerPolicyPlugin } from "./policy.js";
 export { registerSearchPlugin } from "./search.js";
 export { registerGitHubPlugin } from "./github.js";
